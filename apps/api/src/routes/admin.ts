@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { employees, userRoles, users, workshops } from "../db/schema.js";
 import { actorName, audit } from "../audit.js";
+import { userIsWorkshopDono } from "../hierarchy.js";
 import { canApprove, loadMe } from "../me.js";
 import { currentUserId } from "./auth.js";
 
@@ -15,7 +16,7 @@ admin.use("*", async (c, next) => {
   const me = await loadMe(id);
   if (!me) return c.json({ error: "Não autenticado" }, 401);
   if (!me.approved && !me.isOwner) return c.json({ error: "Cadastro aguardando liberação" }, 403);
-  if (!me.isAdmin && !me.isDonoMec) return c.json({ error: "Acesso negado" }, 403);
+  if (!me.isAdmin && !me.isDonoMec && !me.isManager) return c.json({ error: "Acesso negado" }, 403);
   c.set("me" as never, me as never);
   await next();
 });
@@ -49,7 +50,8 @@ admin.get("/users", async (c) => {
 
   const filtered = rows.filter((u) => {
     if (me.isAdmin) return true;
-    return u.requestedWorkshopId && me.donoWorkshops.includes(u.requestedWorkshopId);
+    if (u.requestedWorkshopId && me.manageWorkshops.includes(u.requestedWorkshopId)) return true;
+    return (byUser.get(u.id) ?? []).some((r) => r.workshopId && me.manageWorkshops.includes(r.workshopId));
   });
 
   return c.json(
@@ -78,10 +80,10 @@ admin.post("/users/:id/approve", async (c) => {
 
   let workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
   if (!me.isAdmin) {
-    if (workshopId && !me.donoWorkshops.includes(workshopId)) {
+    if (workshopId && !me.manageWorkshops.includes(workshopId)) {
       return c.json({ error: "Você só pode liberar cadastros da sua mecânica" }, 403);
     }
-    workshopId = workshopId && me.donoWorkshops.includes(workshopId) ? workshopId : me.donoWorkshops[0] ?? workshopId;
+    workshopId = workshopId && me.manageWorkshops.includes(workshopId) ? workshopId : me.manageWorkshops[0] ?? workshopId;
   }
   if (parsed.data.approved && parsed.data.role === "admin" && !me.isOwner) {
     return c.json({ error: "Apenas o owner pode promover admin" }, 403);
@@ -89,8 +91,19 @@ admin.post("/users/:id/approve", async (c) => {
   if (parsed.data.approved && parsed.data.role === "dono_mec" && !me.isAdmin) {
     return c.json({ error: "Apenas admin pode nomear dono da mecânica" }, 403);
   }
+  if (!me.isAdmin && !me.donoWorkshops.includes(workshopId ?? "") && parsed.data.role === "dono_mec") {
+    return c.json({ error: "Gerente não pode alterar o proprietário" }, 403);
+  }
   if (!canApprove(me, workshopId)) {
     return c.json({ error: "Você só pode liberar cadastros da sua mecânica" }, 403);
+  }
+  if (
+    workshopId &&
+    !me.isAdmin &&
+    !me.donoWorkshops.includes(workshopId) &&
+    (await userIsWorkshopDono(userId, workshopId))
+  ) {
+    return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
   }
 
   await db.update(users).set({ approved: parsed.data.approved }).where(eq(users.id, userId));
@@ -123,16 +136,22 @@ admin.post("/users/:id/approve", async (c) => {
         .from(employees)
         .where(and(eq(employees.workshopId, workshopId), eq(employees.discordId, target.discordId)))
         .limit(1);
+      const roleLabel =
+        parsed.data.role === "dono_mec" ? "Proprietario" : parsed.data.role === "manager_mec" ? "Gerente" : "Mecânico";
       if (!emp && ws) {
         await db.insert(employees).values({
           userId: target.id,
           workshopId,
           name: target.displayName || target.username,
           discordId: target.discordId,
+          roleLabel,
           status: "active",
         });
       } else if (emp) {
-        await db.update(employees).set({ userId: target.id, status: "active" }).where(eq(employees.id, emp.id));
+        await db
+          .update(employees)
+          .set({ userId: target.id, status: "active", roleLabel: emp.roleLabel || roleLabel })
+          .where(eq(employees.id, emp.id));
       }
     }
   }
@@ -169,13 +188,19 @@ admin.post("/users/:id/access", async (c) => {
 
   let workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
   if (!me.isAdmin) {
-    if (workshopId && !me.donoWorkshops.includes(workshopId)) {
+    if (workshopId && !me.manageWorkshops.includes(workshopId)) {
       return c.json({ error: "Sem permissão nesta mecânica" }, 403);
     }
-    workshopId = workshopId && me.donoWorkshops.includes(workshopId) ? workshopId : me.donoWorkshops[0] ?? workshopId;
+    workshopId = workshopId && me.manageWorkshops.includes(workshopId) ? workshopId : me.manageWorkshops[0] ?? workshopId;
   }
   if (parsed.data.role === "admin" && !me.isOwner) return c.json({ error: "Apenas o owner pode promover admin" }, 403);
   if (parsed.data.role === "dono_mec" && !me.isAdmin) return c.json({ error: "Apenas admin pode nomear dono" }, 403);
+  if (!me.isAdmin && workshopId && !me.donoWorkshops.includes(workshopId) && parsed.data.role === "dono_mec") {
+    return c.json({ error: "Gerente não pode alterar o proprietário" }, 403);
+  }
+  if (workshopId && !me.isAdmin && !me.donoWorkshops.includes(workshopId) && (await userIsWorkshopDono(userId, workshopId))) {
+    return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
+  }
   if (!canApprove(me, workshopId)) return c.json({ error: "Sem permissão nesta mecânica" }, 403);
 
   const scoped = parsed.data.role !== "admin";
@@ -201,16 +226,19 @@ admin.post("/users/:id/access", async (c) => {
       .from(employees)
       .where(and(eq(employees.workshopId, workshopId), eq(employees.discordId, target.discordId)))
       .limit(1);
+    const roleLabel =
+      parsed.data.role === "dono_mec" ? "Proprietario" : parsed.data.role === "manager_mec" ? "Gerente" : "Mecânico";
     if (!emp) {
       await db.insert(employees).values({
         userId: target.id,
         workshopId,
         name: target.displayName || target.username,
         discordId: target.discordId,
+        roleLabel,
         status: "active",
       });
     } else {
-      await db.update(employees).set({ userId: target.id, status: "active" }).where(eq(employees.id, emp.id));
+      await db.update(employees).set({ userId: target.id, status: "active", roleLabel }).where(eq(employees.id, emp.id));
     }
   }
 
@@ -219,10 +247,10 @@ admin.post("/users/:id/access", async (c) => {
 
 admin.get("/workshops", async (c) => {
   const me = meOf(c);
-  if (!me.isAdmin && !me.isDonoMec) return c.json({ error: "Acesso negado" }, 403);
+  if (!me.isAdmin && !me.isDonoMec && !me.isManager) return c.json({ error: "Acesso negado" }, 403);
   let rows = await db.select().from(workshops).orderBy(workshops.name);
   if (!me.isAdmin) {
-    rows = rows.filter((w) => me.donoWorkshops.includes(w.id));
+    rows = rows.filter((w) => me.manageWorkshops.includes(w.id));
   }
   return c.json(rows);
 });
@@ -230,7 +258,7 @@ admin.get("/workshops", async (c) => {
 admin.patch("/workshops/:id", async (c) => {
   const me = meOf(c);
   const id = c.req.param("id");
-  if (!me.isAdmin && !me.donoWorkshops.includes(id)) {
+  if (!me.isAdmin && !me.manageWorkshops.includes(id)) {
     return c.json({ error: "Acesso negado" }, 403);
   }
 

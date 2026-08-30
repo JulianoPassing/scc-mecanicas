@@ -36,7 +36,7 @@ export function HomePage() {
       navigate("/pendente", { replace: true });
       return;
     }
-    if (me.isAdmin || me.isDonoMec) navigate("/admin", { replace: true });
+    if (me.isAdmin || me.isDonoMec || me.isManager) navigate("/admin", { replace: true });
     else if (me.employee) navigate(`/oficina/${me.employee.workshopSlug}`, { replace: true });
   }, [me, loading, navigate]);
 

@@ -12,7 +12,7 @@ import { brandOf } from "@/lib/brands";
 
 export function AdminPage() {
   const { me, loading, logout } = useAuth();
-  const donoOnly = !!me && me.isDonoMec && !me.isAdmin;
+  const shopOnly = !!me && !me.isAdmin && (me.isDonoMec || me.isManager);
   const [tab, setTab] = useState<"users" | "workshops">("users");
 
   if (loading) {
@@ -25,7 +25,7 @@ export function AdminPage() {
   }
   if (!me) return <Navigate to="/" replace />;
   if (!me.approved && !me.isOwner) return <Navigate to="/pendente" replace />;
-  if (!me.isAdmin && !me.isDonoMec) return <Navigate to="/" replace />;
+  if (!me.isAdmin && !me.isDonoMec && !me.isManager) return <Navigate to="/" replace />;
 
   return (
     <div className="min-h-screen">
@@ -45,9 +45,10 @@ export function AdminPage() {
       </header>
       <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-4 anim-up">
         <ShopLinks />
-        {donoOnly && (
+        {shopOnly && (
           <p className="text-sm text-muted-foreground">
             Você vê só os cadastros da sua mecânica. Liberar coloca a pessoa na equipe.
+            {me.isManager && !me.isDonoMec ? " Gerente não pode alterar o proprietário." : ""}
           </p>
         )}
         <div className="flex gap-2">
@@ -60,7 +61,11 @@ export function AdminPage() {
             </Button>
           )}
         </div>
-        {tab === "users" ? <UsersTab donoOnly={donoOnly} donoWorkshops={me.donoWorkshops} /> : <WorkshopsTab />}
+        {tab === "users" ? (
+          <UsersTab shopOnly={shopOnly} manageWorkshops={me.manageWorkshops} hideDono={shopOnly} />
+        ) : (
+          <WorkshopsTab />
+        )}
       </main>
     </div>
   );
@@ -94,7 +99,15 @@ function ShopLinks() {
   );
 }
 
-function UsersTab({ donoOnly, donoWorkshops }: { donoOnly: boolean; donoWorkshops: string[] }) {
+function UsersTab({
+  shopOnly,
+  manageWorkshops,
+  hideDono,
+}: {
+  shopOnly: boolean;
+  manageWorkshops: string[];
+  hideDono: boolean;
+}) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [roles, setRoles] = useState<Record<string, string>>({});
@@ -103,7 +116,7 @@ function UsersTab({ donoOnly, donoWorkshops }: { donoOnly: boolean; donoWorkshop
   async function load() {
     const [u, w] = await Promise.all([
       api<AdminUser[]>("/admin/users"),
-      api<Workshop[]>(donoOnly ? "/admin/workshops" : "/workshops"),
+      api<Workshop[]>(shopOnly ? "/admin/workshops" : "/workshops"),
     ]);
     setUsers(u);
     setWorkshops(w);
@@ -169,7 +182,7 @@ function UsersTab({ donoOnly, donoWorkshops }: { donoOnly: boolean; donoWorkshop
             >
               <option value="mechanic">Mecânico</option>
               <option value="manager_mec">Gerente</option>
-              {!donoOnly && (
+              {!hideDono && (
                 <>
                   <option value="dono_mec">Dono da mecânica</option>
                   <option value="admin">Admin (todas)</option>
@@ -178,9 +191,9 @@ function UsersTab({ donoOnly, donoWorkshops }: { donoOnly: boolean; donoWorkshop
             </select>
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-              value={wsPick[u.id] ?? u.requestedWorkshopId ?? donoWorkshops[0] ?? ""}
+              value={wsPick[u.id] ?? u.requestedWorkshopId ?? manageWorkshops[0] ?? ""}
               onChange={(e) => setWsPick((s) => ({ ...s, [u.id]: e.target.value }))}
-              disabled={donoOnly && workshops.length <= 1}
+              disabled={shopOnly && workshops.length <= 1}
             >
               <option value="">Mecânica</option>
               {workshops.map((w) => (

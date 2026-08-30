@@ -43,6 +43,7 @@ import {
   type Summary,
 } from "@/lib/api";
 import { brandOf, daysLeft, money, when } from "@/lib/brands";
+import { DEFAULT_CARGOS, isDonoCargo } from "@/lib/cargos";
 
 function Splash() {
   return (
@@ -106,8 +107,11 @@ export function OficinaPage() {
 
   const name = summary?.workshop.name ?? me.employees.find((e) => e.workshopSlug === slug)?.workshopName ?? slug;
   const color = summary?.workshop.primaryColor || brand.color;
-  const manage = me.isAdmin || me.isDonoMec || me.roles.some((r) => r.role === "manager_mec" || r.role === "dono_mec");
-  const canApproveSignups = me.isAdmin || me.isDonoMec;
+  const shopId = summary?.workshop.id;
+  const manage =
+    me.isAdmin || (!!shopId && (me.manageWorkshops ?? []).includes(shopId)) || (!shopId && (me.isDonoMec || me.isManager));
+  const isShopDono = me.isAdmin || (!!shopId && (me.donoWorkshops ?? []).includes(shopId)) || (!shopId && me.isDonoMec);
+  const canApproveSignups = manage;
   const tabs = TABS.filter((t) => t.id !== "cadastros" || canApproveSignups);
 
   return (
@@ -134,7 +138,7 @@ export function OficinaPage() {
           ))}
         </nav>
         <div className="p-3 border-t space-y-2">
-          {(me.isAdmin || me.isDonoMec) && (
+          {manage && (
             <Button asChild variant="outline" size="sm" className="w-full">
               <Link to="/admin">Admin</Link>
             </Button>
@@ -171,10 +175,10 @@ export function OficinaPage() {
           {tab === "os" && <Ordens slug={slug!} canDelete={manage} />}
           {tab === "faturamento" && <Faturamento slug={slug!} />}
           {tab === "cadastros" && canApproveSignups && summary && (
-            <Cadastros workshopId={summary.workshop.id} workshopName={summary.workshop.name} />
+            <Cadastros workshopId={summary.workshop.id} workshopName={summary.workshop.name} canEditDono={isShopDono} />
           )}
-          {tab === "equipe" && <Equipe slug={slug!} manage={manage} />}
-          {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} />}
+          {tab === "equipe" && <Equipe slug={slug!} manage={manage} canEditDono={isShopDono} />}
+          {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} canEditDono={isShopDono} />}
           {tab === "blacklist" && <BlacklistTab slug={slug!} manage={manage} />}
           {tab === "catalogo" && <Catalogo slug={slug!} manage={manage} />}
           {tab === "estoque" && <Estoque slug={slug!} manage={manage} />}
@@ -571,7 +575,15 @@ function Faturamento({ slug }: { slug: string }) {
   );
 }
 
-function Cadastros({ workshopId, workshopName }: { workshopId: string; workshopName: string }) {
+function Cadastros({
+  workshopId,
+  workshopName,
+  canEditDono,
+}: {
+  workshopId: string;
+  workshopName: string;
+  canEditDono: boolean;
+}) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [roles, setRoles] = useState<Record<string, string>>({});
 
@@ -604,7 +616,7 @@ function Cadastros({ workshopId, workshopName }: { workshopId: string; workshopN
     <div className="space-y-4">
       <h2 className="text-xl font-bold">Cadastros · {workshopName}</h2>
       <p className="text-sm text-muted-foreground">
-        Quem pediu esta mecânica. Liberar coloca na equipe. Dono só vê a própria oficina.
+        Quem pediu esta mecânica. Liberar coloca na equipe. Gerente tem os poderes do dono, menos alterar o proprietário.
       </p>
       {users.map((u) => (
         <Card key={u.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
@@ -626,9 +638,11 @@ function Cadastros({ workshopId, workshopName }: { workshopId: string; workshopN
               <option value="manager_mec">Gerente</option>
             </select>
             {u.approved ? (
-              <Button size="sm" variant="outline" onClick={() => void approve(u, false)}>
-                Revogar
-              </Button>
+              (canEditDono || !u.roles.some((r) => r.role === "dono_mec" && r.workshopId === workshopId)) && (
+                <Button size="sm" variant="outline" onClick={() => void approve(u, false)}>
+                  Revogar
+                </Button>
+              )
             ) : (
               <Button size="sm" onClick={() => void approve(u, true)}>
                 Liberar
@@ -642,11 +656,12 @@ function Cadastros({ workshopId, workshopName }: { workshopId: string; workshopN
   );
 }
 
-function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
+function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; canEditDono: boolean }) {
   const [rows, setRows] = useState<Employee[]>([]);
   const [name, setName] = useState("");
   const [discordId, setDiscordId] = useState("");
-  const [roleLabel, setRoleLabel] = useState("");
+  const [roleLabel, setRoleLabel] = useState("Mecânico");
+  const [syncing, setSyncing] = useState(false);
 
   async function load() {
     setRows(await api<Employee[]>(`/workshop/${slug}/employees`));
@@ -693,16 +708,49 @@ function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
         {manage && (
           <Button
             variant="outline"
-            onClick={() =>
-              api(`/workshop/${slug}/employees/sync-nicks`, { method: "POST" })
-                .then(() => {
-                  toast.success("Bot vai ler os apelidos neste Discord. Atualize em alguns segundos.");
-                  setTimeout(() => void load(), 4000);
-                })
-                .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
-            }
+            disabled={syncing}
+            onClick={() => {
+              void (async () => {
+                setSyncing(true);
+                try {
+                  const started = await api<{ actionId: string; queued: number }>(`/workshop/${slug}/employees/sync-nicks`, {
+                    method: "POST",
+                  });
+                  if (!started.queued) {
+                    toast.error("Nenhum funcionário ativo com Discord ID para ler.");
+                    return;
+                  }
+                  toast.message(`Lendo apelidos no Discord (${started.queued})…`);
+                  const deadline = Date.now() + 70_000;
+                  let last: { status: string; updated: number; missing: string[]; error: string | null } | null = null;
+                  while (Date.now() < deadline) {
+                    await new Promise((r) => setTimeout(r, 2000));
+                    last = await api(`/workshop/${slug}/employees/sync-nicks/${started.actionId}`);
+                    if (last.status === "sent" || last.status === "failed") break;
+                  }
+                  await load();
+                  if (last?.status === "sent") {
+                    const miss = last.missing?.length ?? 0;
+                    toast.success(
+                      miss
+                        ? `Atualizou ${last.updated} de ${started.queued}. ${miss} não estão neste Discord.`
+                        : `Atualizou ${last.updated} apelido${last.updated === 1 ? "" : "s"} do Discord.`,
+                    );
+                  } else if (last?.status === "failed") {
+                    toast.error(last.error || "O bot não conseguiu ler os apelidos.");
+                  } else {
+                    toast.error("O bot não respondeu a tempo. Confira se ele está online neste servidor.");
+                  }
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Falha");
+                } finally {
+                  setSyncing(false);
+                }
+              })();
+            }}
           >
-            <RefreshCw className="w-4 h-4" /> Sync apelidos do Discord
+            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Sincronizando…" : "Sync apelidos do Discord"}
           </Button>
         )}
       </div>
@@ -714,7 +762,17 @@ function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
           <form onSubmit={add} className="grid md:grid-cols-4 gap-2">
             <Input placeholder="Nome" value={name} onChange={(e) => setName(e.target.value)} required />
             <Input placeholder="Discord ID" value={discordId} onChange={(e) => setDiscordId(e.target.value.replace(/\D/g, ""))} required />
-            <Input placeholder="Cargo" value={roleLabel} onChange={(e) => setRoleLabel(e.target.value)} />
+            <select
+              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+              value={roleLabel}
+              onChange={(e) => setRoleLabel(e.target.value)}
+            >
+              {DEFAULT_CARGOS.filter((c) => canEditDono || !isDonoCargo(c.label)).map((c) => (
+                <option key={c.label} value={c.label}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
             <Button>Adicionar</Button>
           </form>
         </Card>
@@ -730,7 +788,7 @@ function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
               {e.discordNick ? ` · apelido: ${e.discordNick}` : ""}
             </div>
           </div>
-          {manage && (
+          {manage && (canEditDono || !isDonoCargo(e.roleLabel)) && (
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => void remove(e, false)}>
                 Remover
@@ -746,13 +804,13 @@ function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
   );
 }
 
-function Hierarquia({ slug, manage }: { slug: string; manage: boolean }) {
+function Hierarquia({ slug, manage, canEditDono }: { slug: string; manage: boolean; canEditDono: boolean }) {
   const [roles, setRoles] = useState<HierarchyRole[]>([]);
   const [emps, setEmps] = useState<Employee[]>([]);
 
   async function reload() {
     const d = await api<{ roles: HierarchyRole[]; employees: Employee[] }>(`/workshop/${slug}/hierarchy`);
-    setRoles(d.roles.length ? d.roles : [{ label: "Mecânico", nicknamePrefix: "[MEC]", discordRoleId: null }]);
+    setRoles(d.roles.length ? d.roles : DEFAULT_CARGOS);
     setEmps(d.employees);
   }
 
@@ -771,14 +829,17 @@ function Hierarquia({ slug, manage }: { slug: string; manage: boolean }) {
         <div>
           <h2 className="text-xl font-bold">Hierarquia</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            1) Monte os cargos. 2) Escolha o cargo de cada um. 3) Salve. 4) Sync Discord aplica nick e cargo no servidor desta mecânica.
+            Cargos oficiais: Proprietario, Gerente, Supervisor da Oficina, Preparador, Mecânico, Auxiliar, Aprendiz.
+            Gerente gerencia a oficina, mas não exclui nem altera o proprietário.
           </p>
         </div>
         {manage && (
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => setRoles((r) => [...r, { label: "", nicknamePrefix: "", discordRoleId: "" }])}>
-              + Cargo
-            </Button>
+            {canEditDono && (
+              <Button variant="outline" onClick={() => setRoles((r) => [...r, { label: "", nicknamePrefix: "", discordRoleId: "" }])}>
+                + Cargo
+              </Button>
+            )}
             <Button
               onClick={() =>
                 save()
@@ -810,7 +871,7 @@ function Hierarquia({ slug, manage }: { slug: string; manage: boolean }) {
             <Input
               placeholder="Nome do cargo (ex.: Gerente)"
               value={r.label}
-              disabled={!manage}
+              disabled={!manage || (!canEditDono && isDonoCargo(r.label))}
               onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, label: e.target.value } : x)))}
             />
             <Input
@@ -842,14 +903,16 @@ function Hierarquia({ slug, manage }: { slug: string; manage: boolean }) {
             </div>
             <select
               className="h-9 min-w-[180px] rounded-md border border-input bg-transparent px-2 text-sm"
-              disabled={!manage}
+              disabled={!manage || (!canEditDono && isDonoCargo(e.roleLabel))}
               value={e.roleLabel ?? ""}
               onChange={(ev) =>
                 setEmps((list) => list.map((x) => (x.id === e.id ? { ...x, roleLabel: ev.target.value || null } : x)))
               }
             >
               <option value="">Sem cargo</option>
-              {roles.filter((r) => r.label.trim()).map((r) => (
+              {roles
+                .filter((r) => r.label.trim() && (canEditDono || !isDonoCargo(r.label)))
+                .map((r) => (
                 <option key={r.label} value={r.label}>
                   {r.label}
                 </option>

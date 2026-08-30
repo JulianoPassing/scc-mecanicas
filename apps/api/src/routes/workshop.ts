@@ -16,6 +16,12 @@ import {
   timeClockSessions,
   workshops,
 } from "../db/schema.js";
+import {
+  employeeIsWorkshopDono,
+  isDonoCargo,
+  seedHierarchy,
+  syncEmployeeSystemRole,
+} from "../hierarchy.js";
 import { canAccessWorkshop, canManageWorkshop, requireMe } from "../access.js";
 import { actorName, audit } from "../audit.js";
 import { moneyBr, sendWebhook } from "../discord.js";
@@ -304,23 +310,52 @@ workshopApi.post("/:slug/employees/sync-nicks", async (c) => {
     .select()
     .from(employees)
     .where(and(eq(employees.workshopId, ws.id), eq(employees.status, "active")));
-  await db.insert(botActions).values({
-    type: "nickname_read",
-    guildId: ws.guildId,
-    workshopId: ws.id,
-    payload: JSON.stringify({
-      workshop_id: ws.id,
-      discord_ids: emps.map((e) => e.discordId),
-    }),
-  });
+  const discordIds = [...new Set(emps.map((e) => (e.discordId ?? "").replace(/\D/g, "")).filter(Boolean))];
+  const [action] = await db
+    .insert(botActions)
+    .values({
+      type: "nickname_read",
+      guildId: ws.guildId,
+      workshopId: ws.id,
+      payload: JSON.stringify({
+        workshop_id: ws.id,
+        discord_ids: discordIds,
+      }),
+    })
+    .returning();
   await audit({
     workshopId: ws.id,
     actorId: me.id,
     actorName: actorName(me),
     action: "employee.sync_nicks",
-    summary: `Pediu sync de apelidos do Discord (${emps.length} funcionários)`,
+    summary: `Pediu sync de apelidos do Discord (${discordIds.length} funcionários)`,
   });
-  return c.json({ ok: true, queued: emps.length });
+  return c.json({ ok: true, actionId: action.id, queued: discordIds.length });
+});
+
+workshopApi.get("/:slug/employees/sync-nicks/:actionId", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { ws } = g as { ws: typeof workshops.$inferSelect };
+  const [action] = await db
+    .select()
+    .from(botActions)
+    .where(and(eq(botActions.id, c.req.param("actionId")), eq(botActions.workshopId, ws.id)))
+    .limit(1);
+  if (!action) return c.json({ error: "Sync não encontrado" }, 404);
+  let payload: { result?: { updated?: number; missing?: string[]; found?: number }; error?: string } = {};
+  try {
+    payload = action.payload ? JSON.parse(action.payload) : {};
+  } catch {
+    payload = {};
+  }
+  return c.json({
+    status: action.status,
+    updated: payload.result?.updated ?? 0,
+    found: payload.result?.found ?? 0,
+    missing: payload.result?.missing ?? [],
+    error: payload.error ?? null,
+  });
 });
 
 workshopApi.post("/:slug/employees", async (c) => {
@@ -336,6 +371,9 @@ workshopApi.post("/:slug/employees", async (c) => {
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  if (isDonoCargo(parsed.data.roleLabel) && !me.isAdmin && !me.donoWorkshops.includes(ws.id)) {
+    return c.json({ error: "Gerente não pode promover a proprietário" }, 403);
+  }
   const [row] = await db
     .insert(employees)
     .values({
@@ -382,11 +420,33 @@ workshopApi.patch("/:slug/employees/:id", async (c) => {
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  const [current] = await db
+    .select()
+    .from(employees)
+    .where(and(eq(employees.id, c.req.param("id")), eq(employees.workshopId, ws.id)))
+    .limit(1);
+  if (!current) return c.json({ error: "Não encontrado" }, 404);
+  if (!me.isAdmin && !me.donoWorkshops.includes(ws.id) && (await employeeIsWorkshopDono(current, ws.id))) {
+    return c.json({ error: "Gerente não pode alterar o proprietário" }, 403);
+  }
+  if (
+    parsed.data.roleLabel !== undefined &&
+    isDonoCargo(parsed.data.roleLabel) &&
+    !me.isAdmin &&
+    !me.donoWorkshops.includes(ws.id)
+  ) {
+    return c.json({ error: "Gerente não pode promover a proprietário" }, 403);
+  }
   const [row] = await db
     .update(employees)
     .set(parsed.data)
     .where(and(eq(employees.id, c.req.param("id")), eq(employees.workshopId, ws.id)))
     .returning();
+  if (row && parsed.data.roleLabel !== undefined) {
+    await syncEmployeeSystemRole(row, ws.id, row.roleLabel, {
+      allowChangeDono: me.isAdmin || me.donoWorkshops.includes(ws.id),
+    });
+  }
   return c.json(row);
 });
 
@@ -408,6 +468,9 @@ workshopApi.delete("/:slug/employees/:id", async (c) => {
     .where(and(eq(employees.id, c.req.param("id")), eq(employees.workshopId, ws.id)))
     .limit(1);
   if (!emp) return c.json({ error: "Não encontrado" }, 404);
+  if (!me.isAdmin && !me.donoWorkshops.includes(ws.id) && (await employeeIsWorkshopDono(emp, ws.id))) {
+    return c.json({ error: "Gerente não pode excluir o proprietário" }, 403);
+  }
   if (parsed.success && parsed.data.blacklist) {
     const starts = new Date();
     const ends = new Date(starts.getTime() + parsed.data.blacklist.days * 86400000);
@@ -468,6 +531,7 @@ workshopApi.get("/:slug/hierarchy", async (c) => {
   const g = await gate(c);
   if ("error" in g && g.error) return g.error.json();
   const { ws } = g as { ws: typeof workshops.$inferSelect };
+  await seedHierarchy(ws.id);
   const roles = await db
     .select()
     .from(hierarchyRoles)
@@ -500,6 +564,10 @@ workshopApi.put("/:slug/hierarchy", async (c) => {
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  const canEditDono = me.isAdmin || me.donoWorkshops.includes(ws.id);
+  if (!canEditDono && !parsed.data.roles.some((r) => isDonoCargo(r.label))) {
+    return c.json({ error: "Gerente não pode remover o cargo de proprietário" }, 403);
+  }
   await db.delete(hierarchyRoles).where(eq(hierarchyRoles.workshopId, ws.id));
   if (parsed.data.roles.length) {
     await db.insert(hierarchyRoles).values(
@@ -514,10 +582,18 @@ workshopApi.put("/:slug/hierarchy", async (c) => {
   }
   if (parsed.data.assignments) {
     for (const a of parsed.data.assignments) {
-      await db
-        .update(employees)
-        .set({ roleLabel: a.roleLabel })
-        .where(and(eq(employees.id, a.employeeId), eq(employees.workshopId, ws.id)));
+      const [emp] = await db
+        .select()
+        .from(employees)
+        .where(and(eq(employees.id, a.employeeId), eq(employees.workshopId, ws.id)))
+        .limit(1);
+      if (!emp) continue;
+      const touchingDono = (await employeeIsWorkshopDono(emp, ws.id)) || isDonoCargo(a.roleLabel);
+      if (!canEditDono && touchingDono) {
+        return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
+      }
+      await db.update(employees).set({ roleLabel: a.roleLabel }).where(eq(employees.id, emp.id));
+      await syncEmployeeSystemRole(emp, ws.id, a.roleLabel, { allowChangeDono: canEditDono });
     }
   }
   await audit({
@@ -595,6 +671,16 @@ workshopApi.post("/:slug/blacklist", async (c) => {
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  if (parsed.data.discordId && !me.isAdmin && !me.donoWorkshops.includes(ws.id)) {
+    const [target] = await db
+      .select()
+      .from(employees)
+      .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, parsed.data.discordId)))
+      .limit(1);
+    if (target && (await employeeIsWorkshopDono(target, ws.id))) {
+      return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
+    }
+  }
   const starts = new Date();
   const [row] = await db
     .insert(blacklists)

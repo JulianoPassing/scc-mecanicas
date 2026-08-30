@@ -66,6 +66,25 @@ botPublic.get("/bot/actions", async (c) => {
   });
 });
 
+function digitsId(value: string) {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+async function writeActionResult(actionId: string | undefined, status: "sent" | "failed", result: unknown, error?: string) {
+  if (!actionId) return;
+  const [row] = await db.select().from(botActions).where(eq(botActions.id, actionId)).limit(1);
+  if (!row) return;
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
+  } catch {
+    payload = {};
+  }
+  payload.result = result;
+  if (error) payload.error = error;
+  await db.update(botActions).set({ status, payload: JSON.stringify(payload) }).where(eq(botActions.id, actionId));
+}
+
 botPublic.post("/bot/nicks", async (c) => {
   const auth = authorize(c);
   if (!auth.ok) return c.json({ error: auth.error }, auth.status);
@@ -73,7 +92,9 @@ botPublic.post("/bot/nicks", async (c) => {
     .object({
       guild_id: z.string().trim().min(1),
       workshop_id: z.string().uuid().optional(),
+      action_id: z.string().uuid().optional(),
       nicks: z.array(z.object({ discord_id: z.string(), nick: z.string().max(80) })).max(400),
+      missing: z.array(z.string()).optional(),
     })
     .safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return c.json({ error: "Payload inválido" }, 400);
@@ -81,18 +102,30 @@ botPublic.post("/bot/nicks", async (c) => {
     ? await db.select().from(workshops).where(eq(workshops.id, parsed.data.workshop_id)).limit(1)
     : await db.select().from(workshops).where(eq(workshops.guildId, parsed.data.guild_id)).limit(1);
   if (!ws) return c.json({ error: "Mecânica não encontrada" }, 404);
+  const team = await db.select().from(employees).where(eq(employees.workshopId, ws.id));
+  const byDiscord = new Map<string, typeof team>();
+  for (const emp of team) {
+    const key = digitsId(emp.discordId);
+    if (!key) continue;
+    const list = byDiscord.get(key) ?? [];
+    list.push(emp);
+    byDiscord.set(key, list);
+  }
   let updated = 0;
   for (const n of parsed.data.nicks) {
-    const [emp] = await db
-      .select()
-      .from(employees)
-      .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, n.discord_id)))
-      .limit(1);
-    if (!emp) continue;
-    await db.update(employees).set({ discordNick: n.nick }).where(eq(employees.id, emp.id));
-    updated += 1;
+    const matches = byDiscord.get(digitsId(n.discord_id)) ?? [];
+    for (const emp of matches) {
+      await db.update(employees).set({ discordNick: n.nick }).where(eq(employees.id, emp.id));
+      updated += 1;
+    }
   }
-  return c.json({ ok: true, updated });
+  const result = {
+    updated,
+    found: parsed.data.nicks.length,
+    missing: parsed.data.missing ?? [],
+  };
+  await writeActionResult(parsed.data.action_id, "sent", result);
+  return c.json({ ok: true, ...result });
 });
 
 botPublic.post("/bot/actions", async (c) => {
@@ -103,7 +136,12 @@ botPublic.post("/bot/actions", async (c) => {
   let updated = 0;
   for (const item of ack.slice(0, 500)) {
     if (!item?.id || (item.status !== "sent" && item.status !== "failed")) continue;
-    await db.update(botActions).set({ status: item.status }).where(eq(botActions.id, item.id));
+    const extra = item as { id: string; status: "sent" | "failed"; result?: unknown; error?: string };
+    if (extra.result !== undefined || extra.error) {
+      await writeActionResult(extra.id, extra.status, extra.result ?? null, extra.error);
+    } else {
+      await db.update(botActions).set({ status: extra.status }).where(eq(botActions.id, extra.id));
+    }
     updated += 1;
   }
   return c.json({ updated, errors: [] });

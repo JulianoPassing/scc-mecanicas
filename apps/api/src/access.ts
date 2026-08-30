@@ -20,6 +20,5 @@ export function canManageWorkshop(
   workshopId: string,
 ) {
   if (me.isAdmin) return true;
-  if (me.donoWorkshops.includes(workshopId)) return true;
-  return me.roles.some((r) => r.workshopId === workshopId && (r.role === "dono_mec" || r.role === "manager_mec"));
+  return me.manageWorkshops.includes(workshopId);
 }

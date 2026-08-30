@@ -11,8 +11,11 @@ export async function loadMe(userId: string) {
   const roles = await db.select().from(userRoles).where(eq(userRoles.userId, user.id));
   const isOwner = roles.some((r) => r.role === "owner");
   const isAdmin = isOwner || roles.some((r) => r.role === "admin");
-  const donoWorkshops = roles.filter((r) => r.role === "dono_mec").map((r) => r.workshopId);
+  const donoWorkshops = roles.filter((r) => r.role === "dono_mec").map((r) => r.workshopId).filter(Boolean) as string[];
+  const managerWorkshops = roles.filter((r) => r.role === "manager_mec").map((r) => r.workshopId).filter(Boolean) as string[];
   const isDonoMec = donoWorkshops.length > 0;
+  const isManager = managerWorkshops.length > 0;
+  const manageWorkshops = [...new Set([...donoWorkshops, ...managerWorkshops])];
 
   const empRows = await db
     .select({
@@ -46,7 +49,10 @@ export async function loadMe(userId: string) {
     isOwner,
     isAdmin,
     isDonoMec,
-    donoWorkshops: donoWorkshops.filter(Boolean) as string[],
+    isManager,
+    donoWorkshops,
+    managerWorkshops,
+    manageWorkshops,
     roles: roles.map((r) => ({ role: r.role as Role, workshopId: r.workshopId })),
     employee: empRows[0] ?? null,
     employees: empRows,
@@ -56,6 +62,6 @@ export async function loadMe(userId: string) {
 
 export function canApprove(me: NonNullable<Awaited<ReturnType<typeof loadMe>>>, workshopId: string | null) {
   if (me.isAdmin) return true;
-  if (workshopId && me.donoWorkshops.includes(workshopId)) return true;
+  if (workshopId && me.manageWorkshops.includes(workshopId)) return true;
   return false;
 }

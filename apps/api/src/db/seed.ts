@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { env } from "../env.js";
 import { db } from "./index.js";
+import { seedHierarchy } from "../hierarchy.js";
 import { userRoles, users, workshops } from "./schema.js";
 
 const SEED = [
@@ -27,6 +28,8 @@ export async function seed() {
         .set({ name: w.name, guildId: w.guildId, primaryColor: w.primaryColor })
         .where(eq(workshops.id, existing[0].id));
     }
+    const [ws] = await db.select().from(workshops).where(eq(workshops.slug, w.slug)).limit(1);
+    if (ws) await seedHierarchy(ws.id);
   }
 
   const ownerName = env.ownerUsername.trim().toLowerCase();

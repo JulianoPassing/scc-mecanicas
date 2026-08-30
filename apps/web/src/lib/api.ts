@@ -124,7 +124,10 @@ export type Me = {
   isOwner: boolean;
   isAdmin: boolean;
   isDonoMec: boolean;
+  isManager: boolean;
   donoWorkshops: string[];
+  managerWorkshops: string[];
+  manageWorkshops: string[];
   roles: { role: string; workshopId: string | null }[];
   employee: { id: string; name: string; workshopId: string; workshopSlug: string; workshopName: string } | null;
   employees: { id: string; name: string; workshopId: string; workshopSlug: string; workshopName: string }[];

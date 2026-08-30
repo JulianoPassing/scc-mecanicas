@@ -839,39 +839,79 @@ class LogForwarderCog(commands.Cog):
 
 
 
+    async def _lookup_member(self, guild: discord.Guild, discord_id: object) -> discord.Member | None:
+        raw = "".join(ch for ch in str(discord_id or "") if ch.isdigit())
+        if not raw:
+            return None
+        uid = int(raw)
+        member = guild.get_member(uid)
+        if member:
+            return member
+        try:
+            return await guild.fetch_member(uid)
+        except discord.NotFound:
+            return None
+        except discord.HTTPException as e:
+            log.warning("fetch_member %s em %s: %s", uid, guild.id, e)
+            return None
+        except Exception as e:
+            _log_exc(f"fetch_member {uid}", e)
+            return None
+
     async def _read_nicks(
         self,
         guild: discord.Guild,
-        payload: dict,
+        act: dict,
         session: aiohttp.ClientSession,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str | None, dict]:
+        payload = act.get("payload") or {}
         if isinstance(payload, str):
             try:
                 payload = json.loads(payload) if payload else {}
             except Exception:
                 payload = {}
-        ids = payload.get("discord_ids") or []
+        ids = ["".join(ch for ch in str(did or "") if ch.isdigit()) for did in (payload.get("discord_ids") or [])]
+        ids = [did for did in ids if did]
         workshop_id = payload.get("workshop_id")
-        nicks = []
-        for did in ids:
+        if not guild.chunked:
             try:
-                member = guild.get_member(int(did)) or await guild.fetch_member(int(did))
-            except Exception:
-                member = None
+                await guild.chunk(cache=True)
+            except Exception as e:
+                log.warning("guild.chunk %s: %s", guild.id, e)
+        nicks = []
+        missing = []
+        for i, did in enumerate(ids):
+            member = await self._lookup_member(guild, did)
             if not member:
+                missing.append(did)
                 continue
             nick = member.nick or member.display_name or member.name
-            nicks.append({"discord_id": str(did), "nick": nick[:80]})
+            nicks.append({"discord_id": did, "nick": str(nick)[:80]})
+            if i and i % 8 == 0:
+                await asyncio.sleep(0.2)
+        result = {"found": len(nicks), "missing": missing, "updated": len(nicks)}
         status, data = await self._safe_request(
             session,
             "POST",
             BOT_NICKS_URL,
-            json={"guild_id": str(guild.id), "workshop_id": workshop_id, "nicks": nicks},
+            json={
+                "guild_id": str(guild.id),
+                "workshop_id": workshop_id,
+                "action_id": act.get("id"),
+                "nicks": nicks,
+                "missing": missing,
+            },
             headers=self.headers,
         )
         if status >= 400:
-            return False, _short((data or {}).get("error") or status, 160)
-        return True, None
+            return False, _short((data or {}).get("error") or status, 160), result
+        if isinstance(data, dict):
+            result["updated"] = int(data.get("updated") or result["updated"])
+        log.info(
+            "nicks guild=%s found=%s missing=%s updated=%s",
+            guild.id, result["found"], len(missing), result["updated"],
+        )
+        return True, None, result
 
     async def _process_actions_for_guild(self, guild: discord.Guild) -> tuple[int, int]:
         gid = str(guild.id)
@@ -930,12 +970,12 @@ class LogForwarderCog(commands.Cog):
                             acks.append({"id": act_id, "status": "failed", "error": _short(err, 200)})
                             failed += 1
                     elif act_type == "nickname_read":
-                        ok, err = await self._read_nicks(guild, act.get("payload") or {}, session)
+                        ok, err, result = await self._read_nicks(guild, act, session)
                         if ok:
-                            acks.append({"id": act_id, "status": "sent"})
+                            acks.append({"id": act_id, "status": "sent", "result": result})
                             processed += 1
                         else:
-                            acks.append({"id": act_id, "status": "failed", "error": _short(err, 200)})
+                            acks.append({"id": act_id, "status": "failed", "error": _short(err, 200), "result": result})
                             failed += 1
                     else:
                         acks.append({"id": act_id, "status": "sent"})
@@ -950,7 +990,7 @@ class LogForwarderCog(commands.Cog):
 
         return processed, failed
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=8)
     async def poll_actions(self):
         if not self.bot_secret:
             return
