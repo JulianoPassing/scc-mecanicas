@@ -68,6 +68,11 @@ export type PontoRow = {
   discordId: string;
   openedAt: string;
   closedAt: string | null;
+  hours?: number;
+  weekHours?: number;
+  employeeName?: string | null;
+  discordNick?: string | null;
+  roleLabel?: string | null;
 };
 
 export type AuditLog = {
@@ -112,6 +117,9 @@ export type Summary = {
   month: { total: number; count: number };
   staff: number;
   blacklistActive: number;
+  pendingSignups?: number;
+  farmPending?: number;
+  pontoOpen?: number;
 };
 
 export type Me = {

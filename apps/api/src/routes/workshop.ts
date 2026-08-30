@@ -14,6 +14,7 @@ import {
   serviceOrderItems,
   serviceOrders,
   timeClockSessions,
+  users,
   workshops,
 } from "../db/schema.js";
 import {
@@ -69,7 +70,28 @@ workshopApi.get("/:slug/summary", async (c) => {
     .select({ n: sql<number>`count(*)` })
     .from(blacklists)
     .where(and(eq(blacklists.workshopId, ws.id), gte(blacklists.endsAt, new Date())));
-  return c.json({ workshop: ws, today, month, staff: Number(staff?.n ?? 0), blacklistActive: Number(bl?.n ?? 0) });
+  const [pendingSignups] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(users)
+    .where(and(eq(users.requestedWorkshopId, ws.id), eq(users.approved, false)));
+  const [farmPending] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(farmEntries)
+    .where(and(eq(farmEntries.workshopId, ws.id), eq(farmEntries.status, "pending")));
+  const [pontoOpen] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(timeClockSessions)
+    .where(and(eq(timeClockSessions.workshopId, ws.id), isNull(timeClockSessions.closedAt)));
+  return c.json({
+    workshop: ws,
+    today,
+    month,
+    staff: Number(staff?.n ?? 0),
+    blacklistActive: Number(bl?.n ?? 0),
+    pendingSignups: Number(pendingSignups?.n ?? 0),
+    farmPending: Number(farmPending?.n ?? 0),
+    pontoOpen: Number(pontoOpen?.n ?? 0),
+  });
 });
 
 workshopApi.get("/:slug/orders", async (c) => {
@@ -214,6 +236,17 @@ workshopApi.delete("/:slug/orders/:id", async (c) => {
     .limit(1);
   if (!order) return c.json({ error: "OS não encontrada" }, 404);
   const items = await db.select().from(serviceOrderItems).where(eq(serviceOrderItems.orderId, order.id));
+  for (const item of items) {
+    if (item.kind !== "product") continue;
+    const [prod] = await db
+      .select()
+      .from(products)
+      .where(and(eq(products.workshopId, ws.id), eq(products.name, item.name)))
+      .limit(1);
+    if (prod) {
+      await db.update(products).set({ stock: prod.stock + item.quantity }).where(eq(products.id, prod.id));
+    }
+  }
   await db.delete(serviceOrders).where(eq(serviceOrders.id, order.id));
   await audit({
     workshopId: ws.id,
@@ -764,25 +797,92 @@ workshopApi.delete("/:slug/products/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+function sessionHours(openedAt: Date, closedAt: Date | null) {
+  return Math.round((((closedAt ?? new Date()).getTime() - openedAt.getTime()) / 3600000) * 10) / 10;
+}
+
 workshopApi.get("/:slug/ponto", async (c) => {
   const g = await gate(c);
   if ("error" in g && g.error) return g.error.json();
   const { ws } = g as { ws: typeof workshops.$inferSelect };
+  const since = weekStart();
   const rows = await db
-    .select()
+    .select({
+      id: timeClockSessions.id,
+      discordId: timeClockSessions.discordId,
+      openedAt: timeClockSessions.openedAt,
+      closedAt: timeClockSessions.closedAt,
+      employeeName: employees.name,
+      discordNick: employees.discordNick,
+      roleLabel: employees.roleLabel,
+    })
     .from(timeClockSessions)
+    .leftJoin(employees, eq(timeClockSessions.employeeId, employees.id))
     .where(eq(timeClockSessions.workshopId, ws.id))
     .orderBy(desc(timeClockSessions.openedAt))
     .limit(200);
-  return c.json(rows);
+  const weekHours = new Map<string, number>();
+  const list = rows.map((r) => {
+    const hours = sessionHours(r.openedAt, r.closedAt);
+    if (r.openedAt >= since) {
+      weekHours.set(r.discordId, (weekHours.get(r.discordId) ?? 0) + hours);
+    }
+    return { ...r, hours };
+  });
+  return c.json(
+    list.map((r) => ({
+      ...r,
+      weekHours: Math.round((weekHours.get(r.discordId) ?? 0) * 10) / 10,
+    })),
+  );
 });
 
 workshopApi.post("/:slug/ponto", async (c) => {
   const g = await gate(c);
   if ("error" in g && g.error) return g.error.json();
   const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
-  const parsed = z.object({ action: z.enum(["open", "close"]) }).safeParse(await c.req.json());
+  const parsed = z
+    .object({ action: z.enum(["open", "close"]), sessionId: z.string().uuid().optional() })
+    .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Ação inválida" }, 400);
+
+  if (parsed.data.action === "close" && parsed.data.sessionId) {
+    if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão para fechar o ponto de outra pessoa" }, 403);
+    const [open] = await db
+      .select()
+      .from(timeClockSessions)
+      .where(
+        and(
+          eq(timeClockSessions.id, parsed.data.sessionId),
+          eq(timeClockSessions.workshopId, ws.id),
+          isNull(timeClockSessions.closedAt),
+        ),
+      )
+      .limit(1);
+    if (!open) return c.json({ error: "Ponto não encontrado ou já fechado" }, 404);
+    const [emp] = open.employeeId
+      ? await db.select().from(employees).where(eq(employees.id, open.employeeId)).limit(1)
+      : [];
+    const now = new Date();
+    const hours = sessionHours(open.openedAt, now);
+    await db.update(timeClockSessions).set({ closedAt: now, closedVia: "site" }).where(eq(timeClockSessions.id, open.id));
+    const who = emp?.name || open.discordId;
+    sendWebhook(
+      ws.pontoWebhookUrl,
+      {
+        title: `🔴 Ponto fechado — ${ws.name}`,
+        description: `**${who}** teve o expediente encerrado por **${actorName(me)}**.`,
+        fields: [
+          { name: "Início", value: open.openedAt.toLocaleString("pt-BR"), inline: true },
+          { name: "Fim", value: now.toLocaleString("pt-BR"), inline: true },
+          { name: "Total", value: `${hours}h`, inline: true },
+        ],
+      },
+      ws,
+    );
+    return c.json({ ok: true, status: "closed", hours, employee: who });
+  }
+
   const discordId = me.discordId;
   if (!discordId || discordId === "owner-seed") return c.json({ error: "Conta sem Discord ID" }, 400);
 
@@ -1055,6 +1155,28 @@ workshopApi.post("/:slug/catalog", async (c) => {
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
   const [row] = await db.insert(catalogItems).values({ workshopId: ws.id, ...parsed.data }).returning();
   return c.json(row, 201);
+});
+
+workshopApi.patch("/:slug/catalog/:id", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  const parsed = z
+    .object({
+      kind: z.enum(["install", "remove", "repair"]).optional(),
+      name: z.string().trim().min(1).max(80).optional(),
+      price: z.number().int().min(0).optional(),
+    })
+    .safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  const [row] = await db
+    .update(catalogItems)
+    .set(parsed.data)
+    .where(and(eq(catalogItems.id, c.req.param("id")), eq(catalogItems.workshopId, ws.id)))
+    .returning();
+  if (!row) return c.json({ error: "Não encontrado" }, 404);
+  return c.json(row);
 });
 
 workshopApi.delete("/:slug/catalog/:id", async (c) => {

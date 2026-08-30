@@ -182,7 +182,7 @@ export function OficinaPage() {
           {tab === "blacklist" && <BlacklistTab slug={slug!} manage={manage} />}
           {tab === "catalogo" && <Catalogo slug={slug!} manage={manage} />}
           {tab === "estoque" && <Estoque slug={slug!} manage={manage} />}
-          {tab === "ponto" && <Ponto slug={slug!} />}
+          {tab === "ponto" && <Ponto slug={slug!} manage={manage} />}
           {tab === "farm" && <Farm slug={slug!} manage={manage} />}
           {tab === "logs" && <Logs slug={slug!} isOwner={me.isOwner} />}
         </main>
@@ -210,6 +210,9 @@ function Resumo({ slug, summary }: { slug: string; summary: Summary | null }) {
           { label: "Mês", value: money(month), sub: `${Number(summary?.month?.count ?? 0)} OS` },
           { label: "Equipe ativa", value: String(summary?.staff ?? 0), sub: "funcionários" },
           { label: "Blacklist", value: String(summary?.blacklistActive ?? 0), sub: "ativas agora" },
+          { label: "Cadastros", value: String(summary?.pendingSignups ?? 0), sub: "aguardando liberação" },
+          { label: "Farm", value: String(summary?.farmPending ?? 0), sub: "pendentes de confirmação" },
+          { label: "Ponto aberto", value: String(summary?.pontoOpen ?? 0), sub: "em expediente agora" },
         ].map((s) => (
           <Card key={s.label} className="p-5 glass shop-ring hover-lift">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">{s.label}</div>
@@ -1053,6 +1056,7 @@ function Catalogo({ slug, manage }: { slug: string; manage: boolean }) {
   const [kind, setKind] = useState<CatalogItem["kind"]>("install");
   const [name, setName] = useState("");
   const [price, setPrice] = useState(0);
+  const [edit, setEdit] = useState<Record<string, { name: string; price: number }>>({});
 
   async function load() {
     setRows(await api<CatalogItem[]>(`/workshop/${slug}/catalog`));
@@ -1061,11 +1065,15 @@ function Catalogo({ slug, manage }: { slug: string; manage: boolean }) {
     load().catch((e) => toast.error(e.message));
   }, [slug]);
 
+  function draft(r: CatalogItem) {
+    return edit[r.id] ?? { name: r.name, price: r.price };
+  }
+
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-bold">Catálogo de serviços</h2>
       <p className="text-sm text-muted-foreground">
-        Preços de instalar, remover e reparo. A OS busca daqui, como no sistema antigo.
+        Preços de instalar, remover e reparo. A OS busca daqui. Dono e gerente podem ajustar o preço.
       </p>
       {manage && (
         <Card className="p-4 glass">
@@ -1098,25 +1106,60 @@ function Catalogo({ slug, manage }: { slug: string; manage: boolean }) {
         </Card>
       )}
       {rows.map((r) => (
-        <Card key={r.id} className="p-4 glass flex justify-between gap-3">
-          <div>
+        <Card key={r.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-[140px]">
             <div className="font-medium">{r.name}</div>
-            <div className="text-xs text-muted-foreground">
-              {kindLabel(r.kind)} · {money(r.price)}
-            </div>
+            <div className="text-xs text-muted-foreground">{kindLabel(r.kind)}</div>
           </div>
-          {manage && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                api(`/workshop/${slug}/catalog/${r.id}`, { method: "DELETE" })
-                  .then(() => load())
-                  .catch((e) => toast.error(e.message))
-              }
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
+          {manage ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="w-40"
+                value={draft(r).name}
+                onChange={(e) => setEdit((s) => ({ ...s, [r.id]: { ...draft(r), name: e.target.value } }))}
+              />
+              <Input
+                className="w-28"
+                type="number"
+                min={0}
+                value={draft(r).price}
+                onChange={(e) => setEdit((s) => ({ ...s, [r.id]: { ...draft(r), price: Number(e.target.value) } }))}
+              />
+              <Button
+                size="sm"
+                onClick={() =>
+                  api(`/workshop/${slug}/catalog/${r.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify(draft(r)),
+                  })
+                    .then(() => {
+                      toast.success("Catálogo atualizado");
+                      setEdit((s) => {
+                        const next = { ...s };
+                        delete next[r.id];
+                        return next;
+                      });
+                      void load();
+                    })
+                    .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+                }
+              >
+                <Save className="w-4 h-4" /> Salvar
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  api(`/workshop/${slug}/catalog/${r.id}`, { method: "DELETE" })
+                    .then(() => load())
+                    .catch((e) => toast.error(e.message))
+                }
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
+            </div>
+          ) : (
+            <div className="font-medium">{money(r.price)}</div>
           )}
         </Card>
       ))}
@@ -1130,6 +1173,7 @@ function Estoque({ slug, manage }: { slug: string; manage: boolean }) {
   const [name, setName] = useState("");
   const [price, setPrice] = useState(0);
   const [stock, setStock] = useState(0);
+  const [edit, setEdit] = useState<Record<string, { name: string; price: number; stock: number }>>({});
 
   async function load() {
     setRows(await api<Product[]>(`/workshop/${slug}/products`));
@@ -1138,9 +1182,16 @@ function Estoque({ slug, manage }: { slug: string; manage: boolean }) {
     load().catch((e) => toast.error(e.message));
   }, [slug]);
 
+  function draft(p: Product) {
+    return edit[p.id] ?? { name: p.name, price: p.price, stock: p.stock };
+  }
+
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-bold">Estoque</h2>
+      <p className="text-sm text-muted-foreground">
+        A OS baixa a peça pelo nome. Se a OS for apagada, a quantidade volta para o estoque.
+      </p>
       {manage && (
         <Card className="p-4 glass">
           <form
@@ -1164,15 +1215,73 @@ function Estoque({ slug, manage }: { slug: string; manage: boolean }) {
         </Card>
       )}
       {rows.map((p) => (
-        <Card key={p.id} className="p-4 glass flex justify-between">
-          <div>
-            <div className="font-medium">{p.name}</div>
-            <div className="text-xs text-muted-foreground">
-              {money(p.price)} · {p.stock} un.
+        <Card key={p.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
+          {manage ? (
+            <div className="flex flex-wrap items-center gap-2 w-full">
+              <Input
+                className="min-w-[140px] flex-1"
+                value={draft(p).name}
+                onChange={(e) => setEdit((s) => ({ ...s, [p.id]: { ...draft(p), name: e.target.value } }))}
+              />
+              <Input
+                className="w-28"
+                type="number"
+                min={0}
+                value={draft(p).price}
+                onChange={(e) => setEdit((s) => ({ ...s, [p.id]: { ...draft(p), price: Number(e.target.value) } }))}
+              />
+              <Input
+                className="w-24"
+                type="number"
+                min={0}
+                value={draft(p).stock}
+                onChange={(e) => setEdit((s) => ({ ...s, [p.id]: { ...draft(p), stock: Number(e.target.value) } }))}
+              />
+              <Button
+                size="sm"
+                onClick={() =>
+                  api(`/workshop/${slug}/products/${p.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify(draft(p)),
+                  })
+                    .then(() => {
+                      toast.success("Estoque atualizado");
+                      setEdit((s) => {
+                        const next = { ...s };
+                        delete next[p.id];
+                        return next;
+                      });
+                      void load();
+                    })
+                    .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+                }
+              >
+                <Save className="w-4 h-4" /> Salvar
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (!confirm(`Remover ${p.name} do estoque?`)) return;
+                  api(`/workshop/${slug}/products/${p.id}`, { method: "DELETE" })
+                    .then(() => load())
+                    .catch((e) => toast.error(e.message));
+                }}
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
             </div>
-          </div>
+          ) : (
+            <div>
+              <div className="font-medium">{p.name}</div>
+              <div className="text-xs text-muted-foreground">
+                {money(p.price)} · {p.stock} un.
+              </div>
+            </div>
+          )}
         </Card>
       ))}
+      {rows.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma peça no estoque.</p>}
     </div>
   );
 }
@@ -1220,7 +1329,7 @@ function Logs({ slug, isOwner }: { slug: string; isOwner: boolean }) {
   );
 }
 
-function Ponto({ slug }: { slug: string }) {
+function Ponto({ slug, manage }: { slug: string; manage: boolean }) {
   const [rows, setRows] = useState<PontoRow[]>([]);
   async function load() {
     setRows(await api<PontoRow[]>(`/workshop/${slug}/ponto`));
@@ -1228,11 +1337,11 @@ function Ponto({ slug }: { slug: string }) {
   useEffect(() => {
     load().catch((e) => toast.error(e.message));
   }, [slug]);
-  async function punch(action: "open" | "close") {
+  async function punch(action: "open" | "close", sessionId?: string) {
     try {
       const res = await api<{ status: string; hours?: number }>(`/workshop/${slug}/ponto`, {
         method: "POST",
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, sessionId }),
       });
       if (res.status === "opened") toast.success("Ponto aberto");
       else if (res.status === "closed") toast.success(`Ponto fechado · ${res.hours ?? 0}h`);
@@ -1243,14 +1352,20 @@ function Ponto({ slug }: { slug: string }) {
       toast.error(e instanceof Error ? e.message : "Falha");
     }
   }
+  const weekOpen = rows.filter((r) => !r.closedAt).length;
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xl font-bold">Ponto</h2>
+        <div>
+          <h2 className="text-xl font-bold">Ponto</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            {weekOpen} em aberto · horas da semana a partir de segunda
+          </p>
+        </div>
         <div className="flex gap-2">
           <Button onClick={() => void punch("open")}>Bater ponto</Button>
           <Button variant="outline" onClick={() => void punch("close")}>
-            Fechar ponto
+            Fechar meu ponto
           </Button>
         </div>
       </div>
@@ -1258,16 +1373,29 @@ function Ponto({ slug }: { slug: string }) {
         Também funciona no Discord: `/ponto setup` no canal. Cada batida aparece no canal com início, fim e total, se o webhook de ponto estiver no Admin.
       </p>
       {rows.map((r) => (
-        <Card key={r.id} className="p-4 glass flex justify-between text-sm">
+        <Card key={r.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3 text-sm">
           <div>
-            Discord {r.discordId}
+            <div className="font-medium">{r.discordNick || r.employeeName || r.discordId}</div>
             <div className="text-xs text-muted-foreground">
-              {when(r.openedAt)} {r.closedAt ? `→ ${when(r.closedAt)}` : "· em aberto"}
+              {r.employeeName && r.discordNick && r.discordNick !== r.employeeName ? `${r.employeeName} · ` : ""}
+              Discord {r.discordId}
+              {r.roleLabel ? ` · ${r.roleLabel}` : ""}
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {when(r.openedAt)} {r.closedAt ? `→ ${when(r.closedAt)}` : "· em aberto"} · {r.hours ?? 0}h nesta batida ·{" "}
+              {r.weekHours ?? 0}h na semana
             </div>
           </div>
-          <span className={r.closedAt ? "text-muted-foreground" : "text-emerald-400"}>
-            {r.closedAt ? "Fechado" : "Aberto"}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={r.closedAt ? "text-muted-foreground" : "text-emerald-400"}>
+              {r.closedAt ? "Fechado" : "Aberto"}
+            </span>
+            {manage && !r.closedAt && (
+              <Button size="sm" variant="outline" onClick={() => void punch("close", r.id)}>
+                Fechar
+              </Button>
+            )}
+          </div>
         </Card>
       ))}
       {rows.length === 0 && <p className="text-sm text-muted-foreground">Nenhum ponto registrado.</p>}
