@@ -27,6 +27,7 @@ export const workshops = pgTable(
     whitelistWebhookUrl: text("whitelist_webhook_url"),
     pontoWebhookUrl: text("ponto_webhook_url"),
     farmWebhookUrl: text("farm_webhook_url"),
+    farmWeeklyGoal: integer("farm_weekly_goal").notNull().default(300),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("workshops_guild_id_key").on(t.guildId)],
@@ -69,6 +70,7 @@ export const employees = pgTable("employees", {
   name: text("name").notNull(),
   discordId: text("discord_id").notNull(),
   roleLabel: text("role_label"),
+  discordNick: text("discord_nick"),
   license: text("license"),
   status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -171,6 +173,9 @@ export const farmEntries = pgTable("farm_entries", {
   discordId: text("discord_id").notNull(),
   amount: integer("amount").notNull(),
   status: text("status").notNull().default("pending"),
+  reviewerName: text("reviewer_name"),
+  rejectReason: text("reject_reason"),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -181,6 +186,17 @@ export const botActions = pgTable("bot_actions", {
   workshopId: uuid("workshop_id").references(() => workshops.id),
   payload: text("payload"),
   status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const auditLogs = pgTable("audit_logs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id").references(() => workshops.id, { onDelete: "set null" }),
+  actorId: uuid("actor_id").references(() => users.id, { onDelete: "set null" }),
+  actorName: text("actor_name").notNull(),
+  action: text("action").notNull(),
+  summary: text("summary").notNull(),
+  payload: text("payload"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

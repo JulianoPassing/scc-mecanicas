@@ -1,8 +1,9 @@
 import { Hono } from "hono";
-import { and, desc, eq, gte, ilike, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import {
+  auditLogs,
   blacklists,
   botActions,
   catalogItems,
@@ -16,6 +17,8 @@ import {
   workshops,
 } from "../db/schema.js";
 import { canAccessWorkshop, canManageWorkshop, requireMe } from "../access.js";
+import { actorName, audit } from "../audit.js";
+import { moneyBr, sendWebhook } from "../discord.js";
 
 export const workshopApi = new Hono();
 
@@ -162,27 +165,92 @@ workshopApi.post("/:slug/orders", async (c) => {
     }
   }
 
-  if (ws.orderWebhookUrl) {
-    void fetch(ws.orderWebhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        embeds: [
-          {
-            title: `OS — ${ws.name}`,
-            color: parseInt((ws.primaryColor || "#dc2626").replace("#", ""), 16) || 0xdc2626,
-            fields: [
-              { name: "Mecânico", value: mechanic, inline: true },
-              { name: "Cliente", value: parsed.data.clientName, inline: true },
-              { name: "Placa", value: parsed.data.plate.toUpperCase(), inline: true },
-              { name: "Total", value: `R$ ${total.toLocaleString("pt-BR")}`, inline: false },
-            ],
-          },
-        ],
-      }),
-    }).catch(() => {});
-  }
+  const itemLines = parsed.data.items
+    .map((i) => `• ${i.name} × ${i.quantity} — ${moneyBr(i.unitPrice * i.quantity)}`)
+    .join("\n")
+    .slice(0, 1000);
+  sendWebhook(
+    ws.orderWebhookUrl,
+    {
+      title: `OS — ${ws.name}`,
+      fields: [
+        { name: "Mecânico", value: mechanic, inline: true },
+        { name: "Dono", value: parsed.data.clientName, inline: true },
+        { name: "Placa", value: parsed.data.plate.toUpperCase(), inline: true },
+        { name: "Pagamento", value: parsed.data.paymentMethod || "—", inline: true },
+        { name: "Total", value: moneyBr(total), inline: true },
+        { name: "Itens", value: itemLines || "—" },
+      ],
+    },
+    ws,
+  );
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "order.create",
+    summary: `OS ${parsed.data.plate.toUpperCase()} · ${parsed.data.clientName} · ${moneyBr(total)}`,
+    payload: { orderId: order.id, plate: parsed.data.plate, total, items: parsed.data.items },
+  });
   return c.json(order, 201);
+});
+
+workshopApi.delete("/:slug/orders/:id", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão para apagar OS" }, 403);
+  const [order] = await db
+    .select()
+    .from(serviceOrders)
+    .where(and(eq(serviceOrders.id, c.req.param("id")), eq(serviceOrders.workshopId, ws.id)))
+    .limit(1);
+  if (!order) return c.json({ error: "OS não encontrada" }, 404);
+  const items = await db.select().from(serviceOrderItems).where(eq(serviceOrderItems.orderId, order.id));
+  await db.delete(serviceOrders).where(eq(serviceOrders.id, order.id));
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "order.delete",
+    summary: `Apagou OS ${order.plate} · ${order.clientName} · ${moneyBr(order.total)}`,
+    payload: { order, items },
+  });
+  sendWebhook(
+    ws.orderWebhookUrl,
+    {
+      title: `OS apagada — ${ws.name}`,
+      description: `**${actorName(me)}** apagou a OS da placa **${order.plate}**.`,
+      fields: [
+        { name: "Dono", value: order.clientName, inline: true },
+        { name: "Total", value: moneyBr(order.total), inline: true },
+      ],
+    },
+    ws,
+  );
+  return c.json({ ok: true });
+});
+
+workshopApi.get("/:slug/logs", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { ws } = g as { ws: typeof workshops.$inferSelect };
+  const rows = await db
+    .select()
+    .from(auditLogs)
+    .where(eq(auditLogs.workshopId, ws.id))
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(400);
+  return c.json(rows);
+});
+
+workshopApi.delete("/:slug/logs/:id", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!me.isOwner) return c.json({ error: "Só o owner geral pode apagar logs" }, 403);
+  await db.delete(auditLogs).where(and(eq(auditLogs.id, c.req.param("id")), eq(auditLogs.workshopId, ws.id)));
+  return c.json({ ok: true });
 });
 
 workshopApi.get("/:slug/billing", async (c) => {
@@ -226,6 +294,35 @@ workshopApi.get("/:slug/employees", async (c) => {
   return c.json(rows);
 });
 
+workshopApi.post("/:slug/employees/sync-nicks", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  if (!ws.guildId) return c.json({ error: "Guild ID desta mecânica não está configurado no Admin" }, 400);
+  const emps = await db
+    .select()
+    .from(employees)
+    .where(and(eq(employees.workshopId, ws.id), eq(employees.status, "active")));
+  await db.insert(botActions).values({
+    type: "nickname_read",
+    guildId: ws.guildId,
+    workshopId: ws.id,
+    payload: JSON.stringify({
+      workshop_id: ws.id,
+      discord_ids: emps.map((e) => e.discordId),
+    }),
+  });
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "employee.sync_nicks",
+    summary: `Pediu sync de apelidos do Discord (${emps.length} funcionários)`,
+  });
+  return c.json({ ok: true, queued: emps.length });
+});
+
 workshopApi.post("/:slug/employees", async (c) => {
   const g = await gate(c);
   if ("error" in g && g.error) return g.error.json();
@@ -249,6 +346,26 @@ workshopApi.post("/:slug/employees", async (c) => {
       status: "active",
     })
     .returning();
+  sendWebhook(
+    ws.staffEventsWebhookUrl,
+    {
+      title: `Equipe — ${ws.name}`,
+      description: `**${row.name}** entrou na equipe.`,
+      fields: [
+        { name: "Discord", value: row.discordId, inline: true },
+        { name: "Cargo", value: row.roleLabel || "—", inline: true },
+      ],
+    },
+    ws,
+  );
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "employee.create",
+    summary: `Adicionou ${row.name} na equipe`,
+    payload: { employeeId: row.id, discordId: row.discordId },
+  });
   return c.json(row, 201);
 });
 
@@ -312,8 +429,38 @@ workshopApi.delete("/:slug/employees/:id", async (c) => {
         payload: JSON.stringify({ discord_id: emp.discordId, reason: parsed.data.blacklist.reason }),
       });
     }
+    sendWebhook(
+      ws.blacklistWebhookUrl,
+      {
+        title: `Blacklist — ${ws.name}`,
+        description: `**${emp.name}** foi para a blacklist.`,
+        fields: [
+          { name: "Motivo", value: parsed.data.blacklist.reason.slice(0, 500) },
+          { name: "Dias", value: String(parsed.data.blacklist.days), inline: true },
+          { name: "Discord", value: emp.discordId || "—", inline: true },
+        ],
+      },
+      ws,
+    );
   }
+  sendWebhook(
+    ws.staffEventsWebhookUrl,
+    {
+      title: `Equipe — ${ws.name}`,
+      description: `**${emp.name}** saiu da equipe.`,
+      fields: [{ name: "Discord", value: emp.discordId || "—", inline: true }],
+    },
+    ws,
+  );
   await db.delete(employees).where(eq(employees.id, emp.id));
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "employee.delete",
+    summary: `Removeu ${emp.name} da equipe${parsed.success && parsed.data.blacklist ? " + blacklist" : ""}`,
+    payload: { employee: emp, blacklist: parsed.success ? parsed.data.blacklist : undefined },
+  });
   return c.json({ ok: true });
 });
 
@@ -347,6 +494,9 @@ workshopApi.put("/:slug/hierarchy", async (c) => {
           discordRoleId: z.string().trim().max(40).optional().nullable(),
         }),
       ),
+      assignments: z
+        .array(z.object({ employeeId: z.string().uuid(), roleLabel: z.string().trim().max(80).nullable() }))
+        .optional(),
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
@@ -362,6 +512,21 @@ workshopApi.put("/:slug/hierarchy", async (c) => {
       })),
     );
   }
+  if (parsed.data.assignments) {
+    for (const a of parsed.data.assignments) {
+      await db
+        .update(employees)
+        .set({ roleLabel: a.roleLabel })
+        .where(and(eq(employees.id, a.employeeId), eq(employees.workshopId, ws.id)));
+    }
+  }
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "hierarchy.save",
+    summary: `Salvou hierarquia (${parsed.data.roles.length} cargos, ${parsed.data.assignments?.length ?? 0} atribuições)`,
+  });
   return c.json({ ok: true });
 });
 
@@ -389,6 +554,18 @@ workshopApi.post("/:slug/hierarchy/push", async (c) => {
       employees: emps.map((e) => ({ name: e.name, discord_id: e.discordId, role_label: e.roleLabel })),
     }),
   });
+  sendWebhook(
+    ws.hierarchyWebhookUrl,
+    {
+      title: `Hierarquia — ${ws.name}`,
+      description: "Hierarquia enviada ao Discord (nicks e cargos).",
+      fields: [
+        { name: "Cargos", value: roles.map((r) => r.label).join(", ") || "—" },
+        { name: "Funcionários", value: String(emps.length), inline: true },
+      ],
+    },
+    ws,
+  );
   return c.json({ ok: true });
 });
 
@@ -432,6 +609,19 @@ workshopApi.post("/:slug/blacklist", async (c) => {
       createdBy: me.id,
     })
     .returning();
+  sendWebhook(
+    ws.blacklistWebhookUrl,
+    {
+      title: `Blacklist — ${ws.name}`,
+      description: `**${row.employeeName}** foi para a blacklist.`,
+      fields: [
+        { name: "Motivo", value: row.reason.slice(0, 500) },
+        { name: "Dias", value: String(row.days), inline: true },
+        { name: "Discord", value: row.discordId || "—", inline: true },
+      ],
+    },
+    ws,
+  );
   return c.json(row, 201);
 });
 
@@ -509,17 +699,188 @@ workshopApi.get("/:slug/ponto", async (c) => {
   return c.json(rows);
 });
 
+workshopApi.post("/:slug/ponto", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  const parsed = z.object({ action: z.enum(["open", "close"]) }).safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Ação inválida" }, 400);
+  const discordId = me.discordId;
+  if (!discordId || discordId === "owner-seed") return c.json({ error: "Conta sem Discord ID" }, 400);
+
+  const [emp] = await db
+    .select()
+    .from(employees)
+    .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, discordId), eq(employees.status, "active")))
+    .limit(1);
+  if (!emp) return c.json({ error: "Você não está na equipe desta mecânica" }, 404);
+
+  const [open] = await db
+    .select()
+    .from(timeClockSessions)
+    .where(and(eq(timeClockSessions.employeeId, emp.id), isNull(timeClockSessions.closedAt)))
+    .limit(1);
+  const now = new Date();
+
+  if (parsed.data.action === "open") {
+    if (open) return c.json({ ok: true, status: "already_open", openedAt: open.openedAt, employee: emp.name });
+    const [row] = await db
+      .insert(timeClockSessions)
+      .values({
+        workshopId: ws.id,
+        employeeId: emp.id,
+        discordId,
+        channelId: ws.pontoChannelId,
+        openedAt: now,
+      })
+      .returning();
+    sendWebhook(
+      ws.pontoWebhookUrl,
+      {
+        title: `🟢 Ponto aberto — ${ws.name}`,
+        description: `**${emp.name}** iniciou o expediente.`,
+        fields: [{ name: "Início", value: now.toLocaleString("pt-BR"), inline: true }],
+      },
+      ws,
+    );
+    return c.json({ ok: true, status: "opened", openedAt: row.openedAt, employee: emp.name });
+  }
+
+  if (!open) return c.json({ ok: true, status: "already_closed", employee: emp.name });
+  const hours = Math.round(((now.getTime() - open.openedAt.getTime()) / 3600000) * 10) / 10;
+  await db.update(timeClockSessions).set({ closedAt: now, closedVia: "site" }).where(eq(timeClockSessions.id, open.id));
+  sendWebhook(
+    ws.pontoWebhookUrl,
+    {
+      title: `🔴 Ponto fechado — ${ws.name}`,
+      description: `**${emp.name}** encerrou o expediente.`,
+      fields: [
+        { name: "Início", value: open.openedAt.toLocaleString("pt-BR"), inline: true },
+        { name: "Fim", value: now.toLocaleString("pt-BR"), inline: true },
+        { name: "Total", value: `${hours}h`, inline: true },
+      ],
+    },
+    ws,
+  );
+  return c.json({ ok: true, status: "closed", openedAt: open.openedAt, closedAt: now, hours, employee: emp.name });
+});
+
+function weekStart() {
+  const now = new Date();
+  const mondayOffset = now.getDay() === 0 ? 6 : now.getDay() - 1;
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - mondayOffset);
+  return start;
+}
+
+async function farmWeek(ws: typeof workshops.$inferSelect) {
+  const since = weekStart();
+  const entries = await db
+    .select({
+      id: farmEntries.id,
+      discordId: farmEntries.discordId,
+      amount: farmEntries.amount,
+      status: farmEntries.status,
+      reviewerName: farmEntries.reviewerName,
+      rejectReason: farmEntries.rejectReason,
+      reviewedAt: farmEntries.reviewedAt,
+      createdAt: farmEntries.createdAt,
+      employeeName: employees.name,
+      roleLabel: employees.roleLabel,
+    })
+    .from(farmEntries)
+    .leftJoin(employees, eq(farmEntries.employeeId, employees.id))
+    .where(eq(farmEntries.workshopId, ws.id))
+    .orderBy(desc(farmEntries.createdAt))
+    .limit(300);
+
+  const staff = await db
+    .select()
+    .from(employees)
+    .where(and(eq(employees.workshopId, ws.id), eq(employees.status, "active")));
+
+  const totals = new Map<string, { name: string; discordId: string; roleLabel: string | null; total: number }>();
+  for (const e of staff) {
+    totals.set(e.discordId, { name: e.name, discordId: e.discordId, roleLabel: e.roleLabel, total: 0 });
+  }
+  for (const e of entries) {
+    if (e.status !== "approved" || new Date(e.createdAt) < since) continue;
+    const cur = totals.get(e.discordId) ?? {
+      name: e.employeeName || e.discordId,
+      discordId: e.discordId,
+      roleLabel: e.roleLabel,
+      total: 0,
+    };
+    cur.total += Number(e.amount);
+    totals.set(e.discordId, cur);
+  }
+  const byEmployee = [...totals.values()].sort((a, b) => b.total - a.total);
+  const goal = ws.farmWeeklyGoal ?? 300;
+  return {
+    goal,
+    weekStart: since.toISOString(),
+    confirmedTotal: byEmployee.reduce((s, e) => s + e.total, 0),
+    pending: entries.filter((e) => e.status === "pending").length,
+    byEmployee,
+    entries,
+    met: byEmployee.filter((e) => e.total >= goal),
+    missed: byEmployee.filter((e) => e.total < goal),
+  };
+}
+
 workshopApi.get("/:slug/farm", async (c) => {
   const g = await gate(c);
   if ("error" in g && g.error) return g.error.json();
   const { ws } = g as { ws: typeof workshops.$inferSelect };
-  const rows = await db
-    .select()
-    .from(farmEntries)
-    .where(eq(farmEntries.workshopId, ws.id))
-    .orderBy(desc(farmEntries.createdAt))
-    .limit(200);
-  return c.json(rows);
+  return c.json(await farmWeek(ws));
+});
+
+workshopApi.patch("/:slug/farm/goal", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  const parsed = z.object({ goal: z.number().int().min(0).max(1_000_000) }).safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Meta inválida" }, 400);
+  await db.update(workshops).set({ farmWeeklyGoal: parsed.data.goal }).where(eq(workshops.id, ws.id));
+  return c.json({ ok: true, goal: parsed.data.goal });
+});
+
+workshopApi.post("/:slug/farm/report", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  const data = await farmWeek(ws);
+  const line = (e: { name: string; discordId: string; roleLabel: string | null; total: number }) => {
+    const tag = e.roleLabel ? ` (@${e.roleLabel} | <@${e.discordId}>)` : ` (<@${e.discordId}>)`;
+    return `• ${e.name}${tag} — ${e.total}/${data.goal}`;
+  };
+  const metText = data.met.length ? data.met.map(line).join("\n").slice(0, 1000) : "—";
+  const missedText = data.missed.length ? data.missed.map(line).join("\n").slice(0, 1000) : "—";
+  if (!ws.farmWebhookUrl) return c.json({ error: "Webhook de farm não configurado no Admin" }, 400);
+  sendWebhook(
+    ws.farmWebhookUrl,
+    {
+      title: "📊 Fechamento semanal do farm",
+      description: `Meta semanal: **${data.goal}**`,
+      color: 0x3f3f46,
+      fields: [
+        { name: `✅ Cumpriram (${data.met.length})`, value: metText },
+        { name: `⚠️ Não pagos (${data.missed.length})`, value: missedText },
+      ],
+    },
+    ws,
+  );
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "farm.report",
+    summary: `Gerou relatório semanal de farm (meta ${data.goal})`,
+  });
+  return c.json({ ok: true, ...data });
 });
 
 workshopApi.patch("/:slug/farm/:id", async (c) => {
@@ -527,13 +888,70 @@ workshopApi.patch("/:slug/farm/:id", async (c) => {
   if ("error" in g && g.error) return g.error.json();
   const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
   if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
-  const parsed = z.object({ status: z.enum(["pending", "approved", "rejected"]) }).safeParse(await c.req.json());
+  const parsed = z
+    .object({
+      status: z.enum(["approved", "rejected"]),
+      reason: z.string().trim().max(400).optional(),
+    })
+    .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  if (parsed.data.status === "rejected" && !parsed.data.reason) {
+    return c.json({ error: "Informe o motivo da rejeição" }, 400);
+  }
   const [row] = await db
     .update(farmEntries)
-    .set({ status: parsed.data.status })
+    .set({
+      status: parsed.data.status,
+      reviewerName: actorName(me),
+      rejectReason: parsed.data.reason ?? null,
+      reviewedAt: new Date(),
+    })
     .where(and(eq(farmEntries.id, c.req.param("id")), eq(farmEntries.workshopId, ws.id)))
     .returning();
+  if (!row) return c.json({ error: "Não encontrado" }, 404);
+  const [emp] = row.employeeId
+    ? await db.select().from(employees).where(eq(employees.id, row.employeeId)).limit(1)
+    : [];
+  const who = emp?.name || row.discordId;
+  const mention = `<@${row.discordId}>`;
+  if (parsed.data.status === "approved") {
+    sendWebhook(
+      ws.farmWebhookUrl,
+      {
+        title: "✅ Farm Confirmado",
+        color: 0x22c55e,
+        fields: [
+          { name: "👤 Funcionário", value: `${mention} — ${who}` },
+          { name: "🛠️ Confirmado por", value: actorName(me), inline: true },
+          { name: "📊 Quantidade", value: String(row.amount), inline: true },
+        ],
+      },
+      ws,
+    );
+  } else {
+    sendWebhook(
+      ws.farmWebhookUrl,
+      {
+        title: "❌ Farm Rejeitado",
+        color: 0xef4444,
+        fields: [
+          { name: "👤 Funcionário", value: `${mention} — ${who}` },
+          { name: "🛠️ Rejeitado por", value: actorName(me), inline: true },
+          { name: "📝 Motivo", value: parsed.data.reason || "—" },
+          { name: "📊 Quantidade", value: String(row.amount), inline: true },
+        ],
+      },
+      ws,
+    );
+  }
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: parsed.data.status === "approved" ? "farm.confirm" : "farm.reject",
+    summary: `${parsed.data.status === "approved" ? "Confirmou" : "Rejeitou"} farm de ${who} (${row.amount})`,
+    payload: { entryId: row.id, reason: parsed.data.reason },
+  });
   return c.json(row);
 });
 

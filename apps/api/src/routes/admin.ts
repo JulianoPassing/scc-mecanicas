@@ -3,6 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { employees, userRoles, users, workshops } from "../db/schema.js";
+import { actorName, audit } from "../audit.js";
 import { canApprove, loadMe } from "../me.js";
 import { currentUserId } from "./auth.js";
 
@@ -75,7 +76,13 @@ admin.post("/users/:id/approve", async (c) => {
   const [target] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!target) return c.json({ error: "Usuário não encontrado" }, 404);
 
-  const workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
+  let workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
+  if (!me.isAdmin) {
+    if (workshopId && !me.donoWorkshops.includes(workshopId)) {
+      return c.json({ error: "Você só pode liberar cadastros da sua mecânica" }, 403);
+    }
+    workshopId = workshopId && me.donoWorkshops.includes(workshopId) ? workshopId : me.donoWorkshops[0] ?? workshopId;
+  }
   if (parsed.data.approved && parsed.data.role === "admin" && !me.isOwner) {
     return c.json({ error: "Apenas o owner pode promover admin" }, 403);
   }
@@ -130,6 +137,16 @@ admin.post("/users/:id/approve", async (c) => {
     }
   }
 
+  await audit({
+    workshopId,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: parsed.data.approved ? "user.approve" : "user.revoke",
+    summary: parsed.data.approved
+      ? `Liberou ${target.username} como ${parsed.data.role}`
+      : `Revogou ${target.username}`,
+    payload: { userId: target.id, role: parsed.data.role, workshopId },
+  });
   return c.json({ ok: true });
 });
 
@@ -150,7 +167,13 @@ admin.post("/users/:id/access", async (c) => {
     return c.json({ error: "Não dá para alterar o owner" }, 403);
   }
 
-  const workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
+  let workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
+  if (!me.isAdmin) {
+    if (workshopId && !me.donoWorkshops.includes(workshopId)) {
+      return c.json({ error: "Sem permissão nesta mecânica" }, 403);
+    }
+    workshopId = workshopId && me.donoWorkshops.includes(workshopId) ? workshopId : me.donoWorkshops[0] ?? workshopId;
+  }
   if (parsed.data.role === "admin" && !me.isOwner) return c.json({ error: "Apenas o owner pode promover admin" }, 403);
   if (parsed.data.role === "dono_mec" && !me.isAdmin) return c.json({ error: "Apenas admin pode nomear dono" }, 403);
   if (!canApprove(me, workshopId)) return c.json({ error: "Sem permissão nesta mecânica" }, 403);
@@ -225,6 +248,7 @@ admin.patch("/workshops/:id", async (c) => {
       whitelistWebhookUrl: z.string().trim().max(500).nullable().optional(),
       pontoWebhookUrl: z.string().trim().max(500).nullable().optional(),
       farmWebhookUrl: z.string().trim().max(500).nullable().optional(),
+      farmWeeklyGoal: z.number().int().min(0).max(1_000_000).optional(),
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
@@ -245,6 +269,7 @@ admin.patch("/workshops/:id", async (c) => {
       ...(d.whitelistWebhookUrl !== undefined ? { whitelistWebhookUrl: d.whitelistWebhookUrl || null } : {}),
       ...(d.pontoWebhookUrl !== undefined ? { pontoWebhookUrl: d.pontoWebhookUrl || null } : {}),
       ...(d.farmWebhookUrl !== undefined ? { farmWebhookUrl: d.farmWebhookUrl || null } : {}),
+      ...(d.farmWeeklyGoal !== undefined ? { farmWeeklyGoal: d.farmWeeklyGoal } : {}),
     })
     .where(eq(workshops.id, id));
 

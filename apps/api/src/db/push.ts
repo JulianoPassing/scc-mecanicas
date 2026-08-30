@@ -21,8 +21,10 @@ CREATE TABLE IF NOT EXISTS workshops (
   whitelist_webhook_url text,
   ponto_webhook_url text,
   farm_webhook_url text,
+  farm_weekly_goal integer NOT NULL DEFAULT 300,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE workshops ADD COLUMN IF NOT EXISTS farm_weekly_goal integer NOT NULL DEFAULT 300;
 CREATE UNIQUE INDEX IF NOT EXISTS workshops_guild_id_key ON workshops (guild_id) WHERE guild_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS users (
@@ -56,6 +58,7 @@ CREATE TABLE IF NOT EXISTS employees (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS role_label text;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS discord_nick text;
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS license text;
 
 CREATE TABLE IF NOT EXISTS catalog_items (
@@ -140,8 +143,14 @@ CREATE TABLE IF NOT EXISTS farm_entries (
   discord_id text NOT NULL,
   amount integer NOT NULL,
   status text NOT NULL DEFAULT 'pending',
+  reviewer_name text,
+  reject_reason text,
+  reviewed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS reviewer_name text;
+ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS reject_reason text;
+ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS bot_actions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -150,6 +159,17 @@ CREATE TABLE IF NOT EXISTS bot_actions (
   workshop_id uuid REFERENCES workshops(id),
   payload text,
   status text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid REFERENCES workshops(id) ON DELETE SET NULL,
+  actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  actor_name text NOT NULL,
+  action text NOT NULL,
+  summary text NOT NULL,
+  payload text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

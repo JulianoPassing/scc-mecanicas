@@ -40,6 +40,7 @@ BOT_ACTIONS_URL = f"{SITE_URL}/api/public/bot/actions"
 BOT_FARM_URL          = f"{SITE_URL}/api/public/bot/farm"
 BOT_FARM_UPLOAD_URL   = f"{SITE_URL}/api/public/bot/farm-upload"
 BOT_WORKSHOP_GUILD_URL = f"{SITE_URL}/api/public/bot/workshop-by-guild"
+BOT_NICKS_URL = f"{SITE_URL}/api/public/bot/nicks"
 
 
 def _resolve_bot_secret() -> str:
@@ -430,6 +431,12 @@ async def _handle_action(interaction: discord.Interaction, action: str) -> None:
     else:
         emb = discord.Embed(title="OK", description=str(data), color=EMBED_COLOR)
 
+    if st in ("opened", "closed") and interaction.channel:
+        try:
+            await interaction.channel.send(embed=emb)
+        except Exception:
+            pass
+
     await interaction.followup.send(embed=emb, ephemeral=True)
 
 
@@ -478,7 +485,7 @@ class Ponto(commands.Cog):
             description=(
                 "Clique em **🟢 Bater ponto** para iniciar seu expediente.\n"
                 "Clique em **🔴 Fechar ponto** para encerrar.\n\n"
-                "Seu tempo é registrado automaticamente e aparece no painel."
+                "Cada batida é registrada **neste canal** com início, fim e total de horas."
             ),
             color=EMBED_COLOR,
         )
@@ -832,6 +839,40 @@ class LogForwarderCog(commands.Cog):
 
 
 
+    async def _read_nicks(
+        self,
+        guild: discord.Guild,
+        payload: dict,
+        session: aiohttp.ClientSession,
+    ) -> tuple[bool, str | None]:
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload) if payload else {}
+            except Exception:
+                payload = {}
+        ids = payload.get("discord_ids") or []
+        workshop_id = payload.get("workshop_id")
+        nicks = []
+        for did in ids:
+            try:
+                member = guild.get_member(int(did)) or await guild.fetch_member(int(did))
+            except Exception:
+                member = None
+            if not member:
+                continue
+            nick = member.nick or member.display_name or member.name
+            nicks.append({"discord_id": str(did), "nick": nick[:80]})
+        status, data = await self._safe_request(
+            session,
+            "POST",
+            BOT_NICKS_URL,
+            json={"guild_id": str(guild.id), "workshop_id": workshop_id, "nicks": nicks},
+            headers=self.headers,
+        )
+        if status >= 400:
+            return False, _short((data or {}).get("error") or status, 160)
+        return True, None
+
     async def _process_actions_for_guild(self, guild: discord.Guild) -> tuple[int, int]:
         gid = str(guild.id)
         processed = 0
@@ -882,6 +923,14 @@ class LogForwarderCog(commands.Cog):
                             failed += 1
                     elif act_type == "ponto_warn":
                         ok, err = await self._apply_ponto_warn(guild, act.get("payload") or {})
+                        if ok:
+                            acks.append({"id": act_id, "status": "sent"})
+                            processed += 1
+                        else:
+                            acks.append({"id": act_id, "status": "failed", "error": _short(err, 200)})
+                            failed += 1
+                    elif act_type == "nickname_read":
+                        ok, err = await self._read_nicks(guild, act.get("payload") or {}, session)
                         if ok:
                             acks.append({"id": act_id, "status": "sent"})
                             processed += 1

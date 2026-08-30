@@ -5,6 +5,7 @@ import { z } from "zod";
 import { env } from "../env.js";
 import { db } from "../db/index.js";
 import { botActions, botLogs, employees, farmEntries, timeClockSessions, workshops } from "../db/schema.js";
+import { sendWebhook } from "../discord.js";
 
 export const botPublic = new Hono();
 
@@ -33,7 +34,7 @@ botPublic.get("/bot/workshop-by-guild", async (c) => {
   if (!guildId) return c.json({ error: "guild_id ausente" }, 400);
   const [ws] = await db.select().from(workshops).where(eq(workshops.guildId, guildId)).limit(1);
   if (!ws) return c.json({ error: "Mecânica não encontrada" }, 404);
-  return c.json({ id: ws.id, name: ws.name, primary_color: ws.primaryColor, farm_weekly_goal: 0 });
+  return c.json({ id: ws.id, name: ws.name, primary_color: ws.primaryColor, farm_weekly_goal: ws.farmWeeklyGoal });
 });
 
 botPublic.get("/bot/actions", async (c) => {
@@ -49,7 +50,49 @@ botPublic.get("/bot/actions", async (c) => {
     .from(botActions)
     .where(and(eq(botActions.guildId, guildId), eq(botActions.status, "pending")))
     .limit(limit);
-  return c.json({ now: new Date().toISOString(), actions });
+  return c.json({
+    now: new Date().toISOString(),
+    actions: actions.map((a) => {
+      let payload: unknown = a.payload;
+      if (typeof a.payload === "string" && a.payload) {
+        try {
+          payload = JSON.parse(a.payload);
+        } catch {
+          payload = {};
+        }
+      }
+      return { ...a, payload };
+    }),
+  });
+});
+
+botPublic.post("/bot/nicks", async (c) => {
+  const auth = authorize(c);
+  if (!auth.ok) return c.json({ error: auth.error }, auth.status);
+  const parsed = z
+    .object({
+      guild_id: z.string().trim().min(1),
+      workshop_id: z.string().uuid().optional(),
+      nicks: z.array(z.object({ discord_id: z.string(), nick: z.string().max(80) })).max(400),
+    })
+    .safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: "Payload inválido" }, 400);
+  const [ws] = parsed.data.workshop_id
+    ? await db.select().from(workshops).where(eq(workshops.id, parsed.data.workshop_id)).limit(1)
+    : await db.select().from(workshops).where(eq(workshops.guildId, parsed.data.guild_id)).limit(1);
+  if (!ws) return c.json({ error: "Mecânica não encontrada" }, 404);
+  let updated = 0;
+  for (const n of parsed.data.nicks) {
+    const [emp] = await db
+      .select()
+      .from(employees)
+      .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, n.discord_id)))
+      .limit(1);
+    if (!emp) continue;
+    await db.update(employees).set({ discordNick: n.nick }).where(eq(employees.id, emp.id));
+    updated += 1;
+  }
+  return c.json({ ok: true, updated });
 });
 
 botPublic.post("/bot/actions", async (c) => {
@@ -193,6 +236,15 @@ botPublic.post("/hooks/ponto", async (c) => {
       channelId: parsed.data.channel_id,
       openedAt: new Date(nowIso),
     });
+    sendWebhook(
+      ws.pontoWebhookUrl,
+      {
+        title: `🟢 Ponto aberto — ${ws.name}`,
+        description: `**${emp.name}** iniciou o expediente.`,
+        fields: [{ name: "Início", value: new Date(nowIso).toLocaleString("pt-BR"), inline: true }],
+      },
+      ws,
+    );
     return c.json({ ok: true, status: "opened", employee: emp.name, opened_at: nowIso });
   }
 
@@ -202,6 +254,19 @@ botPublic.post("/hooks/ponto", async (c) => {
     .set({ closedAt: new Date(nowIso), closedVia: "discord" })
     .where(eq(timeClockSessions.id, open.id));
   const hours = Math.round(((new Date(nowIso).getTime() - open.openedAt.getTime()) / 3600000) * 10) / 10;
+  sendWebhook(
+    ws.pontoWebhookUrl,
+    {
+      title: `🔴 Ponto fechado — ${ws.name}`,
+      description: `**${emp.name}** encerrou o expediente.`,
+      fields: [
+        { name: "Início", value: open.openedAt.toLocaleString("pt-BR"), inline: true },
+        { name: "Fim", value: new Date(nowIso).toLocaleString("pt-BR"), inline: true },
+        { name: "Total", value: `${hours}h`, inline: true },
+      ],
+    },
+    ws,
+  );
   return c.json({
     ok: true,
     status: "closed",

@@ -45,6 +45,7 @@ export type Employee = {
   name: string;
   discordId: string;
   roleLabel: string | null;
+  discordNick?: string | null;
   status: string;
 };
 
@@ -69,12 +70,35 @@ export type PontoRow = {
   closedAt: string | null;
 };
 
+export type AuditLog = {
+  id: string;
+  action: string;
+  summary: string;
+  actorName: string;
+  createdAt: string;
+};
+
 export type FarmRow = {
   id: string;
   discordId: string;
   amount: number;
   status: string;
+  reviewerName?: string | null;
+  rejectReason?: string | null;
   createdAt: string;
+  employeeName?: string | null;
+  roleLabel?: string | null;
+};
+
+export type FarmWeek = {
+  goal: number;
+  weekStart: string;
+  confirmedTotal: number;
+  pending: number;
+  byEmployee: { name: string; discordId: string; roleLabel: string | null; total: number }[];
+  entries: FarmRow[];
+  met: { name: string; discordId: string; total: number }[];
+  missed: { name: string; discordId: string; total: number }[];
 };
 
 export type Billing = {
@@ -131,4 +155,5 @@ export type WorkshopAdmin = Workshop & {
   whitelistWebhookUrl: string | null;
   pontoWebhookUrl: string | null;
   farmWebhookUrl: string | null;
+  farmWeeklyGoal?: number;
 };

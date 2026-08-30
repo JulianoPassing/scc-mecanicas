@@ -12,6 +12,7 @@ import { brandOf } from "@/lib/brands";
 
 export function AdminPage() {
   const { me, loading, logout } = useAuth();
+  const donoOnly = !!me && me.isDonoMec && !me.isAdmin;
   const [tab, setTab] = useState<"users" | "workshops">("users");
 
   if (loading) {
@@ -44,15 +45,22 @@ export function AdminPage() {
       </header>
       <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-4 anim-up">
         <ShopLinks />
+        {donoOnly && (
+          <p className="text-sm text-muted-foreground">
+            Você vê só os cadastros da sua mecânica. Liberar coloca a pessoa na equipe.
+          </p>
+        )}
         <div className="flex gap-2">
           <Button variant={tab === "users" ? "default" : "outline"} size="sm" onClick={() => setTab("users")}>
             Cadastros
           </Button>
-          <Button variant={tab === "workshops" ? "default" : "outline"} size="sm" onClick={() => setTab("workshops")}>
-            Mecânicas / Discord
-          </Button>
+          {me.isAdmin && (
+            <Button variant={tab === "workshops" ? "default" : "outline"} size="sm" onClick={() => setTab("workshops")}>
+              Mecânicas / Discord
+            </Button>
+          )}
         </div>
-        {tab === "users" ? <UsersTab /> : <WorkshopsTab />}
+        {tab === "users" ? <UsersTab donoOnly={donoOnly} donoWorkshops={me.donoWorkshops} /> : <WorkshopsTab />}
       </main>
     </div>
   );
@@ -61,7 +69,9 @@ export function AdminPage() {
 function ShopLinks() {
   const [shops, setShops] = useState<Workshop[]>([]);
   useEffect(() => {
-    api<Workshop[]>("/workshops").then(setShops).catch(() => {});
+    api<Workshop[]>("/admin/workshops")
+      .then(setShops)
+      .catch(() => api<Workshop[]>("/workshops").then(setShops).catch(() => {}));
   }, []);
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -84,14 +94,17 @@ function ShopLinks() {
   );
 }
 
-function UsersTab() {
+function UsersTab({ donoOnly, donoWorkshops }: { donoOnly: boolean; donoWorkshops: string[] }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [roles, setRoles] = useState<Record<string, string>>({});
   const [wsPick, setWsPick] = useState<Record<string, string>>({});
 
   async function load() {
-    const [u, w] = await Promise.all([api<AdminUser[]>("/admin/users"), api<Workshop[]>("/workshops")]);
+    const [u, w] = await Promise.all([
+      api<AdminUser[]>("/admin/users"),
+      api<Workshop[]>(donoOnly ? "/admin/workshops" : "/workshops"),
+    ]);
     setUsers(u);
     setWorkshops(w);
   }
@@ -156,13 +169,18 @@ function UsersTab() {
             >
               <option value="mechanic">Mecânico</option>
               <option value="manager_mec">Gerente</option>
-              <option value="dono_mec">Dono da mecânica</option>
-              <option value="admin">Admin (todas)</option>
+              {!donoOnly && (
+                <>
+                  <option value="dono_mec">Dono da mecânica</option>
+                  <option value="admin">Admin (todas)</option>
+                </>
+              )}
             </select>
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-              value={wsPick[u.id] ?? u.requestedWorkshopId ?? ""}
+              value={wsPick[u.id] ?? u.requestedWorkshopId ?? donoWorkshops[0] ?? ""}
               onChange={(e) => setWsPick((s) => ({ ...s, [u.id]: e.target.value }))}
+              disabled={donoOnly && workshops.length <= 1}
             >
               <option value="">Mecânica</option>
               {workshops.map((w) => (
@@ -236,6 +254,7 @@ function WorkshopsTab() {
           whitelistWebhookUrl: row.whitelistWebhookUrl,
           pontoWebhookUrl: row.pontoWebhookUrl,
           farmWebhookUrl: row.farmWebhookUrl,
+          farmWeeklyGoal: row.farmWeeklyGoal,
         }),
       });
       setRows((list) => list.map((r) => (r.id === updated.id ? updated : r)));
@@ -287,6 +306,15 @@ function WorkshopsTab() {
                 />
               </div>
             ))}
+            <div className="space-y-1">
+              <Label>Meta semanal de farm</Label>
+              <Input
+                type="number"
+                min={0}
+                value={w.farmWeeklyGoal ?? 300}
+                onChange={(e) => patch(w.id, "farmWeeklyGoal", Number(e.target.value))}
+              />
+            </div>
           </div>
           <div className="flex justify-end">
             <Button onClick={() => void save(w)}>

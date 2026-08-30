@@ -6,6 +6,9 @@ import {
   Clock3,
   LayoutDashboard,
   List,
+  RefreshCw,
+  ScrollText,
+  UserPlus,
   LogOut,
   Package,
   Plus,
@@ -25,11 +28,13 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/modal";
 import {
   api,
+  type AdminUser,
+  type AuditLog,
   type Billing,
   type Blacklist,
   type CatalogItem,
   type Employee,
-  type FarmRow,
+  type FarmWeek,
   type HierarchyRole,
   type OrderItem,
   type PontoRow,
@@ -48,12 +53,13 @@ function Splash() {
   );
 }
 
-type Tab = "resumo" | "os" | "faturamento" | "equipe" | "hierarquia" | "blacklist" | "catalogo" | "estoque" | "ponto" | "farm";
+type Tab = "resumo" | "os" | "faturamento" | "cadastros" | "equipe" | "hierarquia" | "blacklist" | "catalogo" | "estoque" | "ponto" | "farm" | "logs";
 
 const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
   { id: "resumo", label: "Resumo", icon: LayoutDashboard },
   { id: "os", label: "Ordens de serviço", icon: Wrench },
   { id: "faturamento", label: "Faturamento", icon: Wallet },
+  { id: "cadastros", label: "Cadastros", icon: UserPlus },
   { id: "equipe", label: "Equipe", icon: Users },
   { id: "hierarquia", label: "Hierarquia", icon: Receipt },
   { id: "blacklist", label: "Blacklist", icon: Ban },
@@ -61,6 +67,7 @@ const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
   { id: "estoque", label: "Estoque", icon: Package },
   { id: "ponto", label: "Ponto", icon: Clock3 },
   { id: "farm", label: "Farm", icon: Sprout },
+  { id: "logs", label: "Logs", icon: ScrollText },
 ];
 
 export function OficinaPage() {
@@ -100,6 +107,8 @@ export function OficinaPage() {
   const name = summary?.workshop.name ?? me.employees.find((e) => e.workshopSlug === slug)?.workshopName ?? slug;
   const color = summary?.workshop.primaryColor || brand.color;
   const manage = me.isAdmin || me.isDonoMec || me.roles.some((r) => r.role === "manager_mec" || r.role === "dono_mec");
+  const canApproveSignups = me.isAdmin || me.isDonoMec;
+  const tabs = TABS.filter((t) => t.id !== "cadastros" || canApproveSignups);
 
   return (
     <div className="min-h-screen flex" style={{ "--shop": color } as React.CSSProperties}>
@@ -112,7 +121,7 @@ export function OficinaPage() {
           </div>
         </div>
         <nav className="p-3 space-y-1 flex-1 overflow-auto">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -146,7 +155,7 @@ export function OficinaPage() {
           </Button>
         </header>
         <div className="md:hidden overflow-x-auto border-b px-2 py-2 flex gap-1">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -159,8 +168,11 @@ export function OficinaPage() {
 
         <main className="max-w-6xl mx-auto p-4 md:p-8 space-y-6">
           {tab === "resumo" && <Resumo slug={slug!} summary={summary} />}
-          {tab === "os" && <Ordens slug={slug!} />}
+          {tab === "os" && <Ordens slug={slug!} canDelete={manage} />}
           {tab === "faturamento" && <Faturamento slug={slug!} />}
+          {tab === "cadastros" && canApproveSignups && summary && (
+            <Cadastros workshopId={summary.workshop.id} workshopName={summary.workshop.name} />
+          )}
           {tab === "equipe" && <Equipe slug={slug!} manage={manage} />}
           {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} />}
           {tab === "blacklist" && <BlacklistTab slug={slug!} manage={manage} />}
@@ -168,6 +180,7 @@ export function OficinaPage() {
           {tab === "estoque" && <Estoque slug={slug!} manage={manage} />}
           {tab === "ponto" && <Ponto slug={slug!} />}
           {tab === "farm" && <Farm slug={slug!} manage={manage} />}
+          {tab === "logs" && <Logs slug={slug!} isOwner={me.isOwner} />}
         </main>
       </div>
     </div>
@@ -205,7 +218,7 @@ function Resumo({ slug, summary }: { slug: string; summary: Summary | null }) {
   );
 }
 
-function Ordens({ slug }: { slug: string }) {
+function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
   const [rows, setRows] = useState<ServiceOrder[]>([]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -255,7 +268,26 @@ function Ordens({ slug }: { slug: string }) {
                 Mecânico {o.mechanicName} · {when(o.createdAt)}
               </div>
             </div>
-            <div className="font-bold text-primary">{money(o.total)}</div>
+            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <div className="font-bold text-primary">{money(o.total)}</div>
+              {canDelete && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!confirm(`Apagar a OS da placa ${o.plate}? O registro fica nos Logs.`)) return;
+                    api(`/workshop/${slug}/orders/${o.id}`, { method: "DELETE" })
+                      .then(() => {
+                        toast.success("OS apagada. Ficou no log.");
+                        void load();
+                      })
+                      .catch((e) => toast.error(e.message));
+                  }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
           </Card>
         ))}
         {rows.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma OS ainda.</p>}
@@ -289,9 +321,28 @@ function Ordens({ slug }: { slug: string }) {
           </div>
           {detail.notes && <p className="text-sm text-muted-foreground">{detail.notes}</p>}
           <div className="text-xl font-extrabold">{money(detail.total)}</div>
-          <Button variant="outline" onClick={() => setDetail(null)}>
-            Fechar
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setDetail(null)}>
+              Fechar
+            </Button>
+            {canDelete && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (!confirm(`Apagar a OS da placa ${detail.plate}? O registro fica nos Logs.`)) return;
+                  api(`/workshop/${slug}/orders/${detail.id}`, { method: "DELETE" })
+                    .then(() => {
+                      toast.success("OS apagada. Ficou no log.");
+                      setDetail(null);
+                      void load();
+                    })
+                    .catch((e) => toast.error(e.message));
+                }}
+              >
+                <Trash2 className="w-4 h-4" /> Apagar
+              </Button>
+            )}
+          </div>
         </Modal>
       )}
     </div>
@@ -520,6 +571,77 @@ function Faturamento({ slug }: { slug: string }) {
   );
 }
 
+function Cadastros({ workshopId, workshopName }: { workshopId: string; workshopName: string }) {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [roles, setRoles] = useState<Record<string, string>>({});
+
+  async function load() {
+    const all = await api<AdminUser[]>("/admin/users");
+    setUsers(all.filter((u) => u.requestedWorkshopId === workshopId || u.roles.some((r) => r.workshopId === workshopId)));
+  }
+  useEffect(() => {
+    load().catch((e) => toast.error(e.message));
+  }, [workshopId]);
+
+  async function approve(u: AdminUser, approved: boolean) {
+    try {
+      await api(`/admin/users/${u.id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({
+          approved,
+          role: approved ? roles[u.id] || "mechanic" : undefined,
+          workshopId,
+        }),
+      });
+      toast.success(approved ? "Acesso liberado" : "Acesso revogado");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold">Cadastros · {workshopName}</h2>
+      <p className="text-sm text-muted-foreground">
+        Quem pediu esta mecânica. Liberar coloca na equipe. Dono só vê a própria oficina.
+      </p>
+      {users.map((u) => (
+        <Card key={u.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm">
+            <div className="font-medium">
+              {u.username} <span className="text-muted-foreground font-normal">· Discord {u.discordId}</span>
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {u.approved ? "Liberado" : "Pendente"} · {u.roles.map((r) => r.role).join(", ") || "sem cargo"}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <select
+              className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              value={roles[u.id] ?? "mechanic"}
+              onChange={(e) => setRoles((s) => ({ ...s, [u.id]: e.target.value }))}
+            >
+              <option value="mechanic">Mecânico</option>
+              <option value="manager_mec">Gerente</option>
+            </select>
+            {u.approved ? (
+              <Button size="sm" variant="outline" onClick={() => void approve(u, false)}>
+                Revogar
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => void approve(u, true)}>
+                Liberar
+              </Button>
+            )}
+          </div>
+        </Card>
+      ))}
+      {users.length === 0 && <p className="text-sm text-muted-foreground">Nenhum cadastro para esta mecânica.</p>}
+    </div>
+  );
+}
+
 function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
   const [rows, setRows] = useState<Employee[]>([]);
   const [name, setName] = useState("");
@@ -566,7 +688,27 @@ function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold">Equipe</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-bold">Equipe</h2>
+        {manage && (
+          <Button
+            variant="outline"
+            onClick={() =>
+              api(`/workshop/${slug}/employees/sync-nicks`, { method: "POST" })
+                .then(() => {
+                  toast.success("Bot vai ler os apelidos neste Discord. Atualize em alguns segundos.");
+                  setTimeout(() => void load(), 4000);
+                })
+                .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+            }
+          >
+            <RefreshCw className="w-4 h-4" /> Sync apelidos do Discord
+          </Button>
+        )}
+      </div>
+      <p className="text-sm text-muted-foreground">
+        O apelido é o nick da pessoa **neste servidor** da mecânica (Reds no Discord da Reds, Tuner no da Tuner).
+      </p>
       {manage && (
         <Card className="p-4 glass">
           <form onSubmit={add} className="grid md:grid-cols-4 gap-2">
@@ -583,7 +725,10 @@ function Equipe({ slug, manage }: { slug: string; manage: boolean }) {
             <div className="font-medium">
               {e.name} <span className="text-xs text-muted-foreground">{e.roleLabel || "—"}</span>
             </div>
-            <div className="text-xs text-muted-foreground">Discord {e.discordId} · {e.status}</div>
+            <div className="text-xs text-muted-foreground">
+              Discord {e.discordId} · {e.status}
+              {e.discordNick ? ` · apelido: ${e.discordNick}` : ""}
+            </div>
           </div>
           {manage && (
             <div className="flex gap-2">
@@ -605,74 +750,115 @@ function Hierarquia({ slug, manage }: { slug: string; manage: boolean }) {
   const [roles, setRoles] = useState<HierarchyRole[]>([]);
   const [emps, setEmps] = useState<Employee[]>([]);
 
+  async function reload() {
+    const d = await api<{ roles: HierarchyRole[]; employees: Employee[] }>(`/workshop/${slug}/hierarchy`);
+    setRoles(d.roles.length ? d.roles : [{ label: "Mecânico", nicknamePrefix: "[MEC]", discordRoleId: null }]);
+    setEmps(d.employees);
+  }
+
   useEffect(() => {
-    api<{ roles: HierarchyRole[]; employees: Employee[] }>(`/workshop/${slug}/hierarchy`)
-      .then((d) => {
-        setRoles(d.roles.length ? d.roles : [{ label: "Mecânico", nicknamePrefix: "[MEC]", discordRoleId: null }]);
-        setEmps(d.employees);
-      })
-      .catch((e) => toast.error(e.message));
+    reload().catch((e) => toast.error(e.message));
   }, [slug]);
 
   async function save() {
-    try {
-      await api(`/workshop/${slug}/hierarchy`, { method: "PUT", body: JSON.stringify({ roles }) });
-      toast.success("Hierarquia salva");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Falha");
-    }
-  }
-
-  async function push() {
-    try {
-      await api(`/workshop/${slug}/hierarchy/push`, { method: "POST" });
-      toast.success("Enviado ao Discord");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Falha");
-    }
+    const assignments = emps.map((e) => ({ employeeId: e.id, roleLabel: e.roleLabel || null }));
+    await api(`/workshop/${slug}/hierarchy`, { method: "PUT", body: JSON.stringify({ roles, assignments }) });
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold">Hierarquia</h2>
+    <div className="space-y-5">
+      <div className="flex flex-wrap justify-between items-center gap-3">
+        <div>
+          <h2 className="text-xl font-bold">Hierarquia</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            1) Monte os cargos. 2) Escolha o cargo de cada um. 3) Salve. 4) Sync Discord aplica nick e cargo no servidor desta mecânica.
+          </p>
+        </div>
         {manage && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => setRoles((r) => [...r, { label: "", nicknamePrefix: "", discordRoleId: "" }])}>
-              Cargo
+              + Cargo
             </Button>
-            <Button onClick={() => void save()}>
+            <Button
+              onClick={() =>
+                save()
+                  .then(() => toast.success("Cargos e equipe salvos"))
+                  .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+              }
+            >
               <Save className="w-4 h-4" /> Salvar
             </Button>
-            <Button variant="outline" onClick={() => void push()}>
+            <Button
+              variant="outline"
+              onClick={() =>
+                save()
+                  .then(() => api(`/workshop/${slug}/hierarchy/push`, { method: "POST" }))
+                  .then(() => toast.success("Enviado ao Discord. O bot aplica nick e cargo."))
+                  .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+              }
+            >
               Sync Discord
             </Button>
           </div>
         )}
       </div>
-      {roles.map((r, i) => (
-        <Card key={i} className="p-4 glass grid md:grid-cols-3 gap-2">
-          <Input
-            placeholder="Cargo"
-            value={r.label}
-            disabled={!manage}
-            onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, label: e.target.value } : x)))}
-          />
-          <Input
-            placeholder="Prefixo nick"
-            value={r.nicknamePrefix ?? ""}
-            disabled={!manage}
-            onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, nicknamePrefix: e.target.value } : x)))}
-          />
-          <Input
-            placeholder="ID cargo Discord"
-            value={r.discordRoleId ?? ""}
-            disabled={!manage}
-            onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, discordRoleId: e.target.value } : x)))}
-          />
-        </Card>
-      ))}
-      <div className="text-sm text-muted-foreground">{emps.length} funcionários ativos para sincronizar.</div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Cargos</h3>
+        {roles.map((r, i) => (
+          <Card key={i} className="p-4 glass grid md:grid-cols-3 gap-2">
+            <Input
+              placeholder="Nome do cargo (ex.: Gerente)"
+              value={r.label}
+              disabled={!manage}
+              onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, label: e.target.value } : x)))}
+            />
+            <Input
+              placeholder="Prefixo nick (ex.: [GER])"
+              value={r.nicknamePrefix ?? ""}
+              disabled={!manage}
+              onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, nicknamePrefix: e.target.value } : x)))}
+            />
+            <Input
+              placeholder="ID do cargo no Discord"
+              value={r.discordRoleId ?? ""}
+              disabled={!manage}
+              onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, discordRoleId: e.target.value } : x)))}
+            />
+          </Card>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Quem tem qual cargo</h3>
+        {emps.map((e) => (
+          <Card key={e.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-medium">{e.discordNick || e.name}</div>
+              <div className="text-xs text-muted-foreground">
+                {e.name}
+                {e.discordNick && e.discordNick !== e.name ? ` · apelido ${e.discordNick}` : ""} · {e.discordId}
+              </div>
+            </div>
+            <select
+              className="h-9 min-w-[180px] rounded-md border border-input bg-transparent px-2 text-sm"
+              disabled={!manage}
+              value={e.roleLabel ?? ""}
+              onChange={(ev) =>
+                setEmps((list) => list.map((x) => (x.id === e.id ? { ...x, roleLabel: ev.target.value || null } : x)))
+              }
+            >
+              <option value="">Sem cargo</option>
+              {roles.filter((r) => r.label.trim()).map((r) => (
+                <option key={r.label} value={r.label}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </Card>
+        ))}
+        {emps.length === 0 && <p className="text-sm text-muted-foreground">Cadastre a equipe primeiro.</p>}
+      </div>
     </div>
   );
 }
@@ -885,16 +1071,86 @@ function Estoque({ slug, manage }: { slug: string; manage: boolean }) {
   );
 }
 
-function Ponto({ slug }: { slug: string }) {
-  const [rows, setRows] = useState<PontoRow[]>([]);
+function Logs({ slug, isOwner }: { slug: string; isOwner: boolean }) {
+  const [rows, setRows] = useState<AuditLog[]>([]);
+  async function load() {
+    setRows(await api<AuditLog[]>(`/workshop/${slug}/logs`));
+  }
   useEffect(() => {
-    api<PontoRow[]>(`/workshop/${slug}/ponto`)
-      .then(setRows)
-      .catch((e) => toast.error(e.message));
+    load().catch((e) => toast.error(e.message));
   }, [slug]);
   return (
     <div className="space-y-3">
-      <h2 className="text-xl font-bold">Ponto</h2>
+      <h2 className="text-xl font-bold">Logs da mecânica</h2>
+      <p className="text-sm text-muted-foreground">
+        Tudo que acontece nesta oficina fica aqui. Ninguém apaga — só o owner geral do sistema.
+      </p>
+      {rows.map((r) => (
+        <Card key={r.id} className="p-4 glass flex flex-wrap justify-between gap-3">
+          <div>
+            <div className="font-medium">{r.summary}</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {r.actorName} · {r.action} · {when(r.createdAt)}
+            </div>
+          </div>
+          {isOwner && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (!confirm("Apagar este log? Só o owner pode fazer isso.")) return;
+                api(`/workshop/${slug}/logs/${r.id}`, { method: "DELETE" })
+                  .then(() => load())
+                  .catch((e) => toast.error(e.message));
+              }}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
+        </Card>
+      ))}
+      {rows.length === 0 && <p className="text-sm text-muted-foreground">Nenhum log ainda.</p>}
+    </div>
+  );
+}
+
+function Ponto({ slug }: { slug: string }) {
+  const [rows, setRows] = useState<PontoRow[]>([]);
+  async function load() {
+    setRows(await api<PontoRow[]>(`/workshop/${slug}/ponto`));
+  }
+  useEffect(() => {
+    load().catch((e) => toast.error(e.message));
+  }, [slug]);
+  async function punch(action: "open" | "close") {
+    try {
+      const res = await api<{ status: string; hours?: number }>(`/workshop/${slug}/ponto`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      });
+      if (res.status === "opened") toast.success("Ponto aberto");
+      else if (res.status === "closed") toast.success(`Ponto fechado · ${res.hours ?? 0}h`);
+      else if (res.status === "already_open") toast.message("Ponto já estava aberto");
+      else toast.message("Nenhum ponto aberto");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-bold">Ponto</h2>
+        <div className="flex gap-2">
+          <Button onClick={() => void punch("open")}>Bater ponto</Button>
+          <Button variant="outline" onClick={() => void punch("close")}>
+            Fechar ponto
+          </Button>
+        </div>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        Também funciona no Discord: `/ponto setup` no canal. Cada batida aparece no canal com início, fim e total, se o webhook de ponto estiver no Admin.
+      </p>
       {rows.map((r) => (
         <Card key={r.id} className="p-4 glass flex justify-between text-sm">
           <div>
@@ -914,42 +1170,105 @@ function Ponto({ slug }: { slug: string }) {
 }
 
 function Farm({ slug, manage }: { slug: string; manage: boolean }) {
-  const [rows, setRows] = useState<FarmRow[]>([]);
+  const [data, setData] = useState<FarmWeek | null>(null);
+  const [goal, setGoal] = useState(300);
   async function load() {
-    setRows(await api<FarmRow[]>(`/workshop/${slug}/farm`));
+    const d = await api<FarmWeek>(`/workshop/${slug}/farm`);
+    setData(d);
+    setGoal(d.goal);
   }
   useEffect(() => {
     load().catch((e) => toast.error(e.message));
   }, [slug]);
+
+  async function decide(id: string, status: "approved" | "rejected") {
+    let reason: string | undefined;
+    if (status === "rejected") {
+      reason = prompt("Motivo da rejeição") ?? "";
+      if (!reason.trim()) return toast.error("Informe o motivo");
+    }
+    try {
+      await api(`/workshop/${slug}/farm/${id}`, { method: "PATCH", body: JSON.stringify({ status, reason }) });
+      toast.success(status === "approved" ? "Confirmado" : "Rejeitado");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+
   return (
-    <div className="space-y-3">
-      <h2 className="text-xl font-bold">Farm</h2>
-      {rows.map((r) => (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-bold">Farm</h2>
+        {manage && (
+          <div className="flex flex-wrap gap-2">
+            <Input className="w-24" type="number" min={0} value={goal} onChange={(e) => setGoal(Number(e.target.value))} />
+            <Button
+              variant="outline"
+              onClick={() =>
+                api(`/workshop/${slug}/farm/goal`, { method: "PATCH", body: JSON.stringify({ goal }) })
+                  .then(() => {
+                    toast.success("Meta salva");
+                    void load();
+                  })
+                  .catch((e) => toast.error(e.message))
+              }
+            >
+              Salvar meta
+            </Button>
+            <Button
+              onClick={() =>
+                api(`/workshop/${slug}/farm/report`, { method: "POST" })
+                  .then(() => toast.success("Relatório enviado ao canal de farm"))
+                  .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+              }
+            >
+              Gerar relatório
+            </Button>
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card className="p-4 glass">
+          <div className="text-xs text-muted-foreground uppercase">Meta semanal</div>
+          <div className="text-2xl font-extrabold stat-num">{data?.goal ?? 0}</div>
+        </Card>
+        <Card className="p-4 glass">
+          <div className="text-xs text-muted-foreground uppercase">Confirmados na semana</div>
+          <div className="text-2xl font-extrabold stat-num">{data?.confirmedTotal ?? 0}</div>
+        </Card>
+        <Card className="p-4 glass">
+          <div className="text-xs text-muted-foreground uppercase">Cumpriram</div>
+          <div className="text-2xl font-extrabold">{data?.met.length ?? 0}</div>
+        </Card>
+        <Card className="p-4 glass">
+          <div className="text-xs text-muted-foreground uppercase">Pendentes</div>
+          <div className="text-2xl font-extrabold">{data?.pending ?? 0}</div>
+        </Card>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        O funcionário registra no Discord. Dono/gerente confirma ou rejeita. Só o confirmado entra na soma e no relatório.
+      </p>
+      {data?.entries.map((r) => (
         <Card key={r.id} className="p-4 glass flex flex-wrap justify-between gap-3 text-sm">
           <div>
-            Discord {r.discordId} · <strong>{r.amount}</strong>
-            <div className="text-xs text-muted-foreground">
-              {when(r.createdAt)} · {r.status}
+            <div className="font-medium">
+              {r.employeeName || r.discordId} · <strong>{r.amount}</strong>
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {when(r.createdAt)} ·{" "}
+              {r.status === "approved" ? "CONFIRMADO" : r.status === "rejected" ? "REJEITADO" : "pendente"}
+              {r.reviewerName ? ` · ${r.reviewerName}` : ""}
+              {r.rejectReason ? ` · ${r.rejectReason}` : ""}
             </div>
           </div>
           {manage && r.status === "pending" && (
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={() =>
-                  api(`/workshop/${slug}/farm/${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "approved" }) }).then(load)
-                }
-              >
-                Aprovar
+              <Button size="sm" onClick={() => void decide(r.id, "approved")}>
+                Confirmar
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  api(`/workshop/${slug}/farm/${r.id}`, { method: "PATCH", body: JSON.stringify({ status: "rejected" }) }).then(load)
-                }
-              >
-                Recusar
+              <Button size="sm" variant="outline" onClick={() => void decide(r.id, "rejected")}>
+                Rejeitar
               </Button>
             </div>
           )}
