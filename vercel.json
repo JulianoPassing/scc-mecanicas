@@ -1,5 +1,7 @@
 {
-  "buildCommand": "npm install && npm run build:web",
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm install",
+  "buildCommand": "npm run build --workspace=@scc/web",
   "outputDirectory": "apps/web/dist",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }

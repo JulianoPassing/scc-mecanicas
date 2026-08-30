@@ -27,19 +27,35 @@ Owner inicial: `OWNER_USERNAME` / `OWNER_PASSWORD` no `.env` da API.
 
 ## Vercel
 
-1. Importar este repo.
-2. Root do projeto: a raiz (usa `vercel.json`) **ou** `apps/web`.
-3. Env: `VITE_API_URL=https://api.seudominio.com`
+O site é só `apps/web`. No projeto da Vercel:
+
+1. **Settings → General → Root Directory** = `apps/web` (não `apps/api`).
+2. Framework: Vite. Build: `npm run build`. Output: `dist`.
+3. Env: `VITE_API_URL` = URL pública da API na VPS (ex. `https://api.seudominio.com`).
+4. Redeploy.
+
+Se o Root Directory ficar na raiz do repo, o `vercel.json` da raiz chama `@scc/web`.
 
 ## VPS
 
+A pasta `~/Desktop/scc-mecanicas` **já existe**. Não dê clone de novo. Entre e atualize:
+
 ```bash
-# Postgres
+cd ~/Desktop/scc-mecanicas
+git status
+git pull origin main
+```
+
+Se o `pull` recusar (mudanças locais), `git stash` ou `mv ~/Desktop/scc-mecanicas ~/Desktop/scc-mecanicas-old` e aí sim clone.
+
+Depois:
+
+```bash
+# Postgres (só na primeira vez)
 sudo -u postgres psql -c "CREATE USER sccmecanicas WITH PASSWORD 'SENHA';"
 sudo -u postgres psql -c "CREATE DATABASE scc_mecanicas OWNER sccmecanicas;"
 
-git clone https://github.com/JulianoPassing/scc-mecanicas.git
-cd scc-mecanicas
+cd ~/Desktop/scc-mecanicas
 npm install
 cp apps/api/.env.example apps/api/.env   # editar
 cd apps/api && npx tsx src/db/push.ts && npx tsx src/db/seed.ts && npm run build && cd ../..
