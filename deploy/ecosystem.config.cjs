@@ -6,6 +6,7 @@ module.exports = {
       script: "dist/index.js",
       interpreter: "node",
       env: { NODE_ENV: "production" },
+      env_file: ".env",
     },
     {
       name: "scc-mecanicas-bot",
