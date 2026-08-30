@@ -43,7 +43,7 @@ import {
   type Summary,
 } from "@/lib/api";
 import { brandOf, daysLeft, money, when } from "@/lib/brands";
-import { DEFAULT_CARGOS, isDonoCargo } from "@/lib/cargos";
+import { DEFAULT_CARGOS, groupTeamByCargo, isDonoCargo, isGerenteCargo } from "@/lib/cargos";
 
 function Splash() {
   return (
@@ -178,7 +178,7 @@ export function OficinaPage() {
             <Cadastros workshopId={summary.workshop.id} workshopName={summary.workshop.name} canEditDono={isShopDono} />
           )}
           {tab === "equipe" && <Equipe slug={slug!} manage={manage} canEditDono={isShopDono} />}
-          {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} canEditDono={isShopDono} />}
+          {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} />}
           {tab === "blacklist" && <BlacklistTab slug={slug!} manage={manage} />}
           {tab === "catalogo" && <Catalogo slug={slug!} manage={manage} />}
           {tab === "estoque" && <Estoque slug={slug!} manage={manage} />}
@@ -597,11 +597,19 @@ function Cadastros({
 
   async function approve(u: AdminUser, approved: boolean) {
     try {
+      const cargoLabel = roles[u.id] || "Mecânico";
       await api(`/admin/users/${u.id}/approve`, {
         method: "POST",
         body: JSON.stringify({
           approved,
-          role: approved ? roles[u.id] || "mechanic" : undefined,
+          cargoLabel: approved ? cargoLabel : undefined,
+          role: approved
+            ? isDonoCargo(cargoLabel)
+              ? "dono_mec"
+              : isGerenteCargo(cargoLabel)
+                ? "manager_mec"
+                : "mechanic"
+            : undefined,
           workshopId,
         }),
       });
@@ -616,7 +624,7 @@ function Cadastros({
     <div className="space-y-4">
       <h2 className="text-xl font-bold">Cadastros · {workshopName}</h2>
       <p className="text-sm text-muted-foreground">
-        Quem pediu esta mecânica. Liberar coloca na equipe. Gerente tem os poderes do dono, menos alterar o proprietário.
+        Quem pediu esta mecânica. Liberar coloca na equipe com o cargo escolhido. Depois o cargo se altera em Equipe.
       </p>
       {users.map((u) => (
         <Card key={u.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
@@ -631,11 +639,14 @@ function Cadastros({
           <div className="flex flex-wrap gap-2">
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-              value={roles[u.id] ?? "mechanic"}
+              value={roles[u.id] ?? "Mecânico"}
               onChange={(e) => setRoles((s) => ({ ...s, [u.id]: e.target.value }))}
             >
-              <option value="mechanic">Mecânico</option>
-              <option value="manager_mec">Gerente</option>
+              {DEFAULT_CARGOS.filter((c) => canEditDono || !isDonoCargo(c.label)).map((c) => (
+                <option key={c.label} value={c.label}>
+                  {c.label}
+                </option>
+              ))}
             </select>
             {u.approved ? (
               (canEditDono || !u.roles.some((r) => r.role === "dono_mec" && r.workshopId === workshopId)) && (
@@ -677,7 +688,17 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
       toast.success("Funcionário adicionado");
       setName("");
       setDiscordId("");
-      setRoleLabel("");
+      setRoleLabel("Mecânico");
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha");
+    }
+  }
+
+  async function setCargo(emp: Employee, next: string) {
+    try {
+      await api(`/workshop/${slug}/employees/${emp.id}`, { method: "PATCH", body: JSON.stringify({ roleLabel: next }) });
+      toast.success(`${emp.discordNick || emp.name} agora é ${next}`);
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha");
@@ -755,12 +776,12 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
         )}
       </div>
       <p className="text-sm text-muted-foreground">
-        O apelido é o nick da pessoa **neste servidor** da mecânica (Reds no Discord da Reds, Tuner no da Tuner).
+        Quem fez cadastro e foi liberado entra sozinho. O cargo se altera aqui; a Hierarquia só organiza essa mesma lista.
       </p>
       {manage && (
         <Card className="p-4 glass">
           <form onSubmit={add} className="grid md:grid-cols-4 gap-2">
-            <Input placeholder="Nome" value={name} onChange={(e) => setName(e.target.value)} required />
+            <Input placeholder="Nome (sem cadastro)" value={name} onChange={(e) => setName(e.target.value)} required />
             <Input placeholder="Discord ID" value={discordId} onChange={(e) => setDiscordId(e.target.value.replace(/\D/g, ""))} required />
             <select
               className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
@@ -777,34 +798,64 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
           </form>
         </Card>
       )}
-      {rows.map((e) => (
-        <Card key={e.id} className="p-4 glass flex flex-wrap justify-between gap-3">
-          <div>
-            <div className="font-medium">
-              {e.name} <span className="text-xs text-muted-foreground">{e.roleLabel || "—"}</span>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              Discord {e.discordId} · {e.status}
-              {e.discordNick ? ` · apelido: ${e.discordNick}` : ""}
-            </div>
+      {(() => {
+        const { groups, leftover } = groupTeamByCargo(rows);
+        const blocks = [
+          ...groups.map((g) => ({ label: g.label, members: g.members })),
+          ...(leftover.length ? [{ label: "Sem cargo", members: leftover }] : []),
+        ];
+        return blocks.map((block) => (
+          <div key={block.label} className="space-y-2">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              {block.label} · {block.members.length}
+            </h3>
+            {block.members.length === 0 && <p className="text-xs text-muted-foreground px-1">Ninguém neste cargo.</p>}
+            {block.members.map((e) => (
+              <Card key={e.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="font-medium">{e.discordNick || e.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {e.name}
+                    {e.discordNick && e.discordNick !== e.name ? ` · apelido ${e.discordNick}` : ""} · Discord {e.discordId}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {manage && (
+                    <select
+                      className="h-9 min-w-[180px] rounded-md border border-input bg-transparent px-2 text-sm"
+                      disabled={!canEditDono && isDonoCargo(e.roleLabel)}
+                      value={e.roleLabel ?? "Mecânico"}
+                      onChange={(ev) => void setCargo(e, ev.target.value)}
+                    >
+                      {DEFAULT_CARGOS.filter((c) => canEditDono || !isDonoCargo(c.label)).map((c) => (
+                        <option key={c.label} value={c.label}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {manage && (canEditDono || !isDonoCargo(e.roleLabel)) && (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => void remove(e, false)}>
+                        Remover
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => void remove(e, true)}>
+                        Blacklist
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </Card>
+            ))}
           </div>
-          {manage && (canEditDono || !isDonoCargo(e.roleLabel)) && (
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => void remove(e, false)}>
-                Remover
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => void remove(e, true)}>
-                Blacklist
-              </Button>
-            </div>
-          )}
-        </Card>
-      ))}
+        ));
+      })()}
+      {rows.length === 0 && <p className="text-sm text-muted-foreground">Ninguém liberado nesta mecânica ainda.</p>}
     </div>
   );
 }
 
-function Hierarquia({ slug, manage, canEditDono }: { slug: string; manage: boolean; canEditDono: boolean }) {
+function Hierarquia({ slug, manage }: { slug: string; manage: boolean }) {
   const [roles, setRoles] = useState<HierarchyRole[]>([]);
   const [emps, setEmps] = useState<Employee[]>([]);
 
@@ -819,9 +870,10 @@ function Hierarquia({ slug, manage, canEditDono }: { slug: string; manage: boole
   }, [slug]);
 
   async function save() {
-    const assignments = emps.map((e) => ({ employeeId: e.id, roleLabel: e.roleLabel || null }));
-    await api(`/workshop/${slug}/hierarchy`, { method: "PUT", body: JSON.stringify({ roles, assignments }) });
+    await api(`/workshop/${slug}/hierarchy`, { method: "PUT", body: JSON.stringify({ roles }) });
   }
+
+  const { groups, leftover } = groupTeamByCargo(emps);
 
   return (
     <div className="space-y-5">
@@ -829,25 +881,20 @@ function Hierarquia({ slug, manage, canEditDono }: { slug: string; manage: boole
         <div>
           <h2 className="text-xl font-bold">Hierarquia</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Cargos oficiais: Proprietario, Gerente, Supervisor da Oficina, Preparador, Mecânico, Auxiliar, Aprendiz.
-            Gerente gerencia a oficina, mas não exclui nem altera o proprietário.
+            A mesma equipe, organizada do Proprietario ao Aprendiz. Para mudar cargo, use Equipe.
+            Aqui só configura prefixo e cargo do Discord, depois Sync.
           </p>
         </div>
         {manage && (
           <div className="flex flex-wrap gap-2">
-            {canEditDono && (
-              <Button variant="outline" onClick={() => setRoles((r) => [...r, { label: "", nicknamePrefix: "", discordRoleId: "" }])}>
-                + Cargo
-              </Button>
-            )}
             <Button
               onClick={() =>
                 save()
-                  .then(() => toast.success("Cargos e equipe salvos"))
+                  .then(() => toast.success("Prefixos e cargos do Discord salvos"))
                   .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
               }
             >
-              <Save className="w-4 h-4" /> Salvar
+              <Save className="w-4 h-4" /> Salvar Discord
             </Button>
             <Button
               variant="outline"
@@ -864,64 +911,60 @@ function Hierarquia({ slug, manage, canEditDono }: { slug: string; manage: boole
         )}
       </div>
 
-      <div className="space-y-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Cargos</h3>
-        {roles.map((r, i) => (
-          <Card key={i} className="p-4 glass grid md:grid-cols-3 gap-2">
-            <Input
-              placeholder="Nome do cargo (ex.: Gerente)"
-              value={r.label}
-              disabled={!manage || (!canEditDono && isDonoCargo(r.label))}
-              onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, label: e.target.value } : x)))}
-            />
-            <Input
-              placeholder="Prefixo nick (ex.: [GER])"
-              value={r.nicknamePrefix ?? ""}
-              disabled={!manage}
-              onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, nicknamePrefix: e.target.value } : x)))}
-            />
-            <Input
-              placeholder="ID do cargo no Discord"
-              value={r.discordRoleId ?? ""}
-              disabled={!manage}
-              onChange={(e) => setRoles((list) => list.map((x, n) => (n === i ? { ...x, discordRoleId: e.target.value } : x)))}
-            />
-          </Card>
-        ))}
-      </div>
-
-      <div className="space-y-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Quem tem qual cargo</h3>
-        {emps.map((e) => (
-          <Card key={e.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="font-medium">{e.discordNick || e.name}</div>
-              <div className="text-xs text-muted-foreground">
-                {e.name}
-                {e.discordNick && e.discordNick !== e.name ? ` · apelido ${e.discordNick}` : ""} · {e.discordId}
+      {[...groups.map((g) => ({ label: g.label, members: g.members })), ...(leftover.length ? [{ label: "Sem cargo", members: leftover }] : [])].map(
+        (block) => {
+          const role = roles.find((r) => r.label === block.label);
+          const roleIdx = roles.findIndex((r) => r.label === block.label);
+          return (
+            <Card key={block.label} className="p-4 glass space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-semibold">
+                  {block.label} <span className="text-sm font-normal text-muted-foreground">· {block.members.length}</span>
+                </h3>
               </div>
-            </div>
-            <select
-              className="h-9 min-w-[180px] rounded-md border border-input bg-transparent px-2 text-sm"
-              disabled={!manage || (!canEditDono && isDonoCargo(e.roleLabel))}
-              value={e.roleLabel ?? ""}
-              onChange={(ev) =>
-                setEmps((list) => list.map((x) => (x.id === e.id ? { ...x, roleLabel: ev.target.value || null } : x)))
-              }
-            >
-              <option value="">Sem cargo</option>
-              {roles
-                .filter((r) => r.label.trim() && (canEditDono || !isDonoCargo(r.label)))
-                .map((r) => (
-                <option key={r.label} value={r.label}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </Card>
-        ))}
-        {emps.length === 0 && <p className="text-sm text-muted-foreground">Cadastre a equipe primeiro.</p>}
-      </div>
+              {role && manage && (
+                <div className="grid md:grid-cols-2 gap-2">
+                  <Input
+                    placeholder="Prefixo nick (ex.: [GER])"
+                    value={role.nicknamePrefix ?? ""}
+                    onChange={(e) =>
+                      setRoles((list) =>
+                        list.map((x, n) => (n === roleIdx ? { ...x, nicknamePrefix: e.target.value } : x)),
+                      )
+                    }
+                  />
+                  <Input
+                    placeholder="ID do cargo no Discord"
+                    value={role.discordRoleId ?? ""}
+                    onChange={(e) =>
+                      setRoles((list) =>
+                        list.map((x, n) => (n === roleIdx ? { ...x, discordRoleId: e.target.value } : x)),
+                      )
+                    }
+                  />
+                </div>
+              )}
+              {block.members.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Ninguém neste cargo.</p>
+              ) : (
+                <div className="space-y-2">
+                  {block.members.map((e) => (
+                    <div key={e.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary/40 px-3 py-2">
+                      <div>
+                        <div className="font-medium text-sm">{e.discordNick || e.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {e.name}
+                          {e.discordNick && e.discordNick !== e.name ? ` · ${e.discordNick}` : ""} · {e.discordId}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          );
+        },
+      )}
     </div>
   );
 }

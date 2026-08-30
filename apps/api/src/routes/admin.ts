@@ -1,10 +1,10 @@
 import { Hono } from "hono";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { employees, userRoles, users, workshops } from "../db/schema.js";
 import { actorName, audit } from "../audit.js";
-import { userIsWorkshopDono } from "../hierarchy.js";
+import { cargoFromSystemRole, systemRoleFromCargo, userIsWorkshopDono } from "../hierarchy.js";
 import { canApprove, loadMe } from "../me.js";
 import { currentUserId } from "./auth.js";
 
@@ -69,9 +69,10 @@ admin.post("/users/:id/approve", async (c) => {
     .object({
       approved: z.boolean(),
       role: z.enum(["mechanic", "manager_mec", "dono_mec", "admin"]).optional(),
+      cargoLabel: z.string().trim().max(80).optional(),
       workshopId: z.string().uuid().nullable().optional(),
     })
-    .refine((v) => !v.approved || !!v.role, { message: "Selecione o cargo ao aprovar" })
+    .refine((v) => !v.approved || !!v.role || !!v.cargoLabel, { message: "Selecione o cargo ao aprovar" })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "Dados inválidos" }, 400);
 
@@ -85,13 +86,15 @@ admin.post("/users/:id/approve", async (c) => {
     }
     workshopId = workshopId && me.manageWorkshops.includes(workshopId) ? workshopId : me.manageWorkshops[0] ?? workshopId;
   }
-  if (parsed.data.approved && parsed.data.role === "admin" && !me.isOwner) {
+  const cargoLabel = parsed.data.cargoLabel || cargoFromSystemRole(parsed.data.role);
+  const role = parsed.data.role === "admin" ? "admin" : parsed.data.cargoLabel ? systemRoleFromCargo(cargoLabel) : parsed.data.role;
+  if (parsed.data.approved && role === "admin" && !me.isOwner) {
     return c.json({ error: "Apenas o owner pode promover admin" }, 403);
   }
-  if (parsed.data.approved && parsed.data.role === "dono_mec" && !me.isAdmin) {
+  if (parsed.data.approved && role === "dono_mec" && !me.isAdmin) {
     return c.json({ error: "Apenas admin pode nomear dono da mecânica" }, 403);
   }
-  if (!me.isAdmin && !me.donoWorkshops.includes(workshopId ?? "") && parsed.data.role === "dono_mec") {
+  if (!me.isAdmin && !me.donoWorkshops.includes(workshopId ?? "") && role === "dono_mec") {
     return c.json({ error: "Gerente não pode alterar o proprietário" }, 403);
   }
   if (!canApprove(me, workshopId)) {
@@ -108,8 +111,15 @@ admin.post("/users/:id/approve", async (c) => {
 
   await db.update(users).set({ approved: parsed.data.approved }).where(eq(users.id, userId));
 
-  if (parsed.data.approved && parsed.data.role) {
-    const scoped = parsed.data.role !== "admin";
+  if (!parsed.data.approved && workshopId) {
+    await db
+      .update(employees)
+      .set({ status: "inactive" })
+      .where(and(eq(employees.userId, userId), eq(employees.workshopId, workshopId)));
+  }
+
+  if (parsed.data.approved && role) {
+    const scoped = role !== "admin";
     if (scoped && !workshopId) return c.json({ error: "Selecione a mecânica" }, 400);
 
     const existing = await db
@@ -117,14 +127,14 @@ admin.post("/users/:id/approve", async (c) => {
       .from(userRoles)
       .where(
         scoped
-          ? and(eq(userRoles.userId, userId), eq(userRoles.role, parsed.data.role), eq(userRoles.workshopId, workshopId!))
-          : and(eq(userRoles.userId, userId), eq(userRoles.role, parsed.data.role)),
+          ? and(eq(userRoles.userId, userId), eq(userRoles.role, role), eq(userRoles.workshopId, workshopId!))
+          : and(eq(userRoles.userId, userId), eq(userRoles.role, role)),
       )
       .limit(1);
     if (existing.length === 0) {
       await db.insert(userRoles).values({
         userId,
-        role: parsed.data.role,
+        role,
         workshopId: scoped ? workshopId : null,
       });
     }
@@ -134,10 +144,14 @@ admin.post("/users/:id/approve", async (c) => {
       const [emp] = await db
         .select()
         .from(employees)
-        .where(and(eq(employees.workshopId, workshopId), eq(employees.discordId, target.discordId)))
+        .where(
+          and(
+            eq(employees.workshopId, workshopId),
+            or(eq(employees.userId, target.id), eq(employees.discordId, target.discordId)),
+          ),
+        )
         .limit(1);
-      const roleLabel =
-        parsed.data.role === "dono_mec" ? "Proprietario" : parsed.data.role === "manager_mec" ? "Gerente" : "Mecânico";
+      const roleLabel = cargoLabel || cargoFromSystemRole(role);
       if (!emp && ws) {
         await db.insert(employees).values({
           userId: target.id,
@@ -150,7 +164,7 @@ admin.post("/users/:id/approve", async (c) => {
       } else if (emp) {
         await db
           .update(employees)
-          .set({ userId: target.id, status: "active", roleLabel: emp.roleLabel || roleLabel })
+          .set({ userId: target.id, status: "active", roleLabel })
           .where(eq(employees.id, emp.id));
       }
     }
@@ -162,9 +176,9 @@ admin.post("/users/:id/approve", async (c) => {
     actorName: actorName(me),
     action: parsed.data.approved ? "user.approve" : "user.revoke",
     summary: parsed.data.approved
-      ? `Liberou ${target.username} como ${parsed.data.role}`
+      ? `Liberou ${target.username} como ${role} (${cargoLabel})`
       : `Revogou ${target.username}`,
-    payload: { userId: target.id, role: parsed.data.role, workshopId },
+    payload: { userId: target.id, role, cargoLabel, workshopId },
   });
   return c.json({ ok: true });
 });

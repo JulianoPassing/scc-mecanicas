@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "./db/index.js";
-import { employees, hierarchyRoles, userRoles } from "./db/schema.js";
+import { employees, hierarchyRoles, userRoles, users } from "./db/schema.js";
 
 export const DEFAULT_HIERARCHY = [
   { label: "Proprietario", nicknamePrefix: "[PROP]", discordRoleId: null, sortOrder: 0 },
@@ -28,6 +28,92 @@ export function isDonoCargo(label?: string | null) {
 export function isGerenteCargo(label?: string | null) {
   const n = normCargo(label);
   return n === "gerente" || n === "manager" || n === "manager_mec";
+}
+
+export function cargoRank(label?: string | null) {
+  const n = normCargo(label);
+  const idx = DEFAULT_HIERARCHY.findIndex((r) => normCargo(r.label) === n);
+  return idx === -1 ? DEFAULT_HIERARCHY.length : idx;
+}
+
+export function sortTeam<T extends { roleLabel?: string | null; name: string }>(rows: T[]) {
+  return [...rows].sort((a, b) => cargoRank(a.roleLabel) - cargoRank(b.roleLabel) || a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function digitsId(value?: string | null) {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+export function systemRoleFromCargo(label?: string | null): "dono_mec" | "manager_mec" | "mechanic" {
+  if (isDonoCargo(label)) return "dono_mec";
+  if (isGerenteCargo(label)) return "manager_mec";
+  return "mechanic";
+}
+
+export function cargoFromSystemRole(role?: string | null) {
+  if (role === "dono_mec") return "Proprietario";
+  if (role === "manager_mec") return "Gerente";
+  return "Mecânico";
+}
+
+export async function ensureWorkshopTeam(workshopId: string) {
+  const roleRows = await db.select().from(userRoles).where(eq(userRoles.workshopId, workshopId));
+  const teamUserIds = new Set(
+    roleRows.filter((r) => r.role === "mechanic" || r.role === "manager_mec" || r.role === "dono_mec").map((r) => r.userId),
+  );
+  const requested = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.approved, true), eq(users.requestedWorkshopId, workshopId)));
+  for (const u of requested) teamUserIds.add(u.id);
+
+  const emps = await db.select().from(employees).where(eq(employees.workshopId, workshopId));
+  const byUser = new Map(emps.filter((e) => e.userId).map((e) => [e.userId as string, e]));
+  const byDiscord = new Map(emps.map((e) => [digitsId(e.discordId), e]).filter(([k]) => k) as [string, (typeof emps)[0]][]);
+
+  for (const userId of teamUserIds) {
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!user?.approved) continue;
+    const shopRoles = roleRows.filter((r) => r.userId === userId);
+    const inferred = shopRoles.some((r) => r.role === "dono_mec")
+      ? "Proprietario"
+      : shopRoles.some((r) => r.role === "manager_mec")
+        ? "Gerente"
+        : "Mecânico";
+    const emp = (user.id && byUser.get(user.id)) || byDiscord.get(digitsId(user.discordId));
+    if (!emp) {
+      const [created] = await db
+        .insert(employees)
+        .values({
+          userId: user.id,
+          workshopId,
+          name: user.displayName || user.username,
+          discordId: digitsId(user.discordId) || user.discordId,
+          roleLabel: inferred,
+          status: "active",
+        })
+        .returning();
+      byUser.set(user.id, created);
+      const did = digitsId(created.discordId);
+      if (did) byDiscord.set(did, created);
+      continue;
+    }
+    const patch: { userId: string; status: string; roleLabel?: string | null } = { userId: user.id, status: "active" };
+    if (!emp.roleLabel) patch.roleLabel = inferred;
+    if (emp.userId !== user.id || emp.status !== "active" || !emp.roleLabel) {
+      await db.update(employees).set(patch).where(eq(employees.id, emp.id));
+    }
+  }
+}
+
+export async function listWorkshopTeam(workshopId: string) {
+  await seedHierarchy(workshopId);
+  await ensureWorkshopTeam(workshopId);
+  const rows = await db
+    .select()
+    .from(employees)
+    .where(and(eq(employees.workshopId, workshopId), eq(employees.status, "active")));
+  return sortTeam(rows);
 }
 
 export async function syncEmployeeSystemRole(

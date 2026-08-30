@@ -19,6 +19,7 @@ import {
 import {
   employeeIsWorkshopDono,
   isDonoCargo,
+  listWorkshopTeam,
   seedHierarchy,
   syncEmployeeSystemRole,
 } from "../hierarchy.js";
@@ -292,12 +293,7 @@ workshopApi.get("/:slug/employees", async (c) => {
   const g = await gate(c);
   if ("error" in g && g.error) return g.error.json();
   const { ws } = g as { ws: typeof workshops.$inferSelect };
-  const rows = await db
-    .select()
-    .from(employees)
-    .where(eq(employees.workshopId, ws.id))
-    .orderBy(employees.name);
-  return c.json(rows);
+  return c.json(await listWorkshopTeam(ws.id));
 });
 
 workshopApi.post("/:slug/employees/sync-nicks", async (c) => {
@@ -537,11 +533,7 @@ workshopApi.get("/:slug/hierarchy", async (c) => {
     .from(hierarchyRoles)
     .where(eq(hierarchyRoles.workshopId, ws.id))
     .orderBy(hierarchyRoles.sortOrder);
-  const emps = await db
-    .select()
-    .from(employees)
-    .where(and(eq(employees.workshopId, ws.id), eq(employees.status, "active")));
-  return c.json({ roles, employees: emps });
+  return c.json({ roles, employees: await listWorkshopTeam(ws.id) });
 });
 
 workshopApi.put("/:slug/hierarchy", async (c) => {
