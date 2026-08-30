@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, gte, ilike, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import {
@@ -15,6 +15,7 @@ import {
   serviceOrders,
   timeClockSessions,
   users,
+  whitelists,
   workshops,
 } from "../db/schema.js";
 import {
@@ -127,6 +128,45 @@ workshopApi.get("/:slug/orders/:id", async (c) => {
   if (!order) return c.json({ error: "OS não encontrada" }, 404);
   const items = await db.select().from(serviceOrderItems).where(eq(serviceOrderItems.orderId, order.id));
   return c.json({ ...order, items });
+});
+
+workshopApi.get("/:slug/plates/:plate", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { ws } = g as { ws: typeof workshops.$inferSelect };
+  const plate = decodeURIComponent(c.req.param("plate")).trim().toUpperCase();
+  if (!plate) return c.json({ error: "Informe a placa" }, 400);
+  const orders = await db
+    .select()
+    .from(serviceOrders)
+    .where(and(eq(serviceOrders.workshopId, ws.id), eq(serviceOrders.plate, plate)))
+    .orderBy(desc(serviceOrders.createdAt));
+  const items =
+    orders.length === 0
+      ? []
+      : await db
+          .select()
+          .from(serviceOrderItems)
+          .where(
+            inArray(
+              serviceOrderItems.orderId,
+              orders.map((o) => o.id),
+            ),
+          );
+  const byOrder = new Map<string, typeof items>();
+  for (const it of items) {
+    const list = byOrder.get(it.orderId) ?? [];
+    list.push(it);
+    byOrder.set(it.orderId, list);
+  }
+  const total = orders.reduce((s, o) => s + Number(o.total), 0);
+  return c.json({
+    plate,
+    count: orders.length,
+    total,
+    lastClient: orders[0]?.clientName ?? null,
+    orders: orders.map((o) => ({ ...o, items: byOrder.get(o.id) ?? [] })),
+  });
 });
 
 workshopApi.post("/:slug/orders", async (c) => {
@@ -706,13 +746,19 @@ workshopApi.post("/:slug/blacklist", async (c) => {
       return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
     }
   }
+  const discordId = (parsed.data.discordId ?? "").replace(/\D/g, "") || null;
+  if (discordId) {
+    await db
+      .delete(whitelists)
+      .where(and(eq(whitelists.workshopId, ws.id), eq(whitelists.discordId, discordId)));
+  }
   const starts = new Date();
   const [row] = await db
     .insert(blacklists)
     .values({
       workshopId: ws.id,
       employeeName: parsed.data.employeeName,
-      discordId: parsed.data.discordId ?? null,
+      discordId,
       reason: parsed.data.reason,
       days: parsed.data.days,
       startsAt: starts,
@@ -744,6 +790,115 @@ workshopApi.delete("/:slug/blacklist/:id", async (c) => {
   await db
     .delete(blacklists)
     .where(and(eq(blacklists.id, c.req.param("id")), eq(blacklists.workshopId, ws.id)));
+  return c.json({ ok: true });
+});
+
+workshopApi.get("/:slug/whitelist", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { ws } = g as { ws: typeof workshops.$inferSelect };
+  const rows = await db
+    .select()
+    .from(whitelists)
+    .where(eq(whitelists.workshopId, ws.id))
+    .orderBy(desc(whitelists.createdAt));
+  return c.json(rows);
+});
+
+workshopApi.post("/:slug/whitelist", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(80),
+      discordId: z.string().trim().regex(/^\d{5,32}$/, "Discord ID inválido"),
+      note: z.string().trim().max(500).optional(),
+    })
+    .safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "Dados inválidos" }, 400);
+  const discordId = parsed.data.discordId.replace(/\D/g, "");
+  const [blocked] = await db
+    .select()
+    .from(blacklists)
+    .where(
+      and(eq(blacklists.workshopId, ws.id), eq(blacklists.discordId, discordId), gte(blacklists.endsAt, new Date())),
+    )
+    .limit(1);
+  if (blocked) return c.json({ error: "Essa pessoa está na blacklist ativa. Tire da BL antes de liberar." }, 409);
+  const [already] = await db
+    .select()
+    .from(whitelists)
+    .where(and(eq(whitelists.workshopId, ws.id), eq(whitelists.discordId, discordId)))
+    .limit(1);
+  if (already) return c.json({ error: "Já está na whitelist desta mecânica" }, 409);
+  const [row] = await db
+    .insert(whitelists)
+    .values({
+      workshopId: ws.id,
+      name: parsed.data.name,
+      discordId,
+      note: parsed.data.note ?? null,
+      createdBy: me.id,
+    })
+    .returning();
+  sendWebhook(
+    ws.whitelistWebhookUrl,
+    {
+      title: `Whitelist — ${ws.name}`,
+      description: `**${row.name}** foi liberado na whitelist.`,
+      fields: [
+        { name: "Discord", value: `<@${row.discordId}> · ${row.discordId}`, inline: true },
+        { name: "Nota", value: (row.note || "—").slice(0, 500) },
+        { name: "Por", value: actorName(me), inline: true },
+      ],
+    },
+    ws,
+  );
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "whitelist.add",
+    summary: `Whitelist: ${row.name} (${row.discordId})`,
+    payload: { whitelist: row },
+  });
+  return c.json(row, 201);
+});
+
+workshopApi.delete("/:slug/whitelist/:id", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  const [row] = await db
+    .select()
+    .from(whitelists)
+    .where(and(eq(whitelists.id, c.req.param("id")), eq(whitelists.workshopId, ws.id)))
+    .limit(1);
+  if (!row) return c.json({ error: "Não encontrado" }, 404);
+  await db.delete(whitelists).where(eq(whitelists.id, row.id));
+  sendWebhook(
+    ws.whitelistWebhookUrl,
+    {
+      title: `Whitelist — ${ws.name}`,
+      description: `**${row.name}** saiu da whitelist.`,
+      fields: [
+        { name: "Discord", value: row.discordId, inline: true },
+        { name: "Por", value: actorName(me), inline: true },
+      ],
+    },
+    ws,
+  );
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "whitelist.remove",
+    summary: `Tirou ${row.name} da whitelist`,
+    payload: { whitelist: row },
+  });
   return c.json({ ok: true });
 });
 

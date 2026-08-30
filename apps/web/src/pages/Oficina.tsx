@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Ban,
   Clock3,
+  ShieldCheck,
   LayoutDashboard,
   List,
   RefreshCw,
@@ -38,8 +39,10 @@ import {
   type HierarchyRole,
   type OrderItem,
   type PontoRow,
+  type PlateHistory,
   type Product,
   type ServiceOrder,
+  type Whitelist,
   type Summary,
 } from "@/lib/api";
 import { brandOf, daysLeft, money, when } from "@/lib/brands";
@@ -54,7 +57,20 @@ function Splash() {
   );
 }
 
-type Tab = "resumo" | "os" | "faturamento" | "cadastros" | "equipe" | "hierarquia" | "blacklist" | "catalogo" | "estoque" | "ponto" | "farm" | "logs";
+type Tab =
+  | "resumo"
+  | "os"
+  | "faturamento"
+  | "cadastros"
+  | "equipe"
+  | "hierarquia"
+  | "blacklist"
+  | "whitelist"
+  | "catalogo"
+  | "estoque"
+  | "ponto"
+  | "farm"
+  | "logs";
 
 const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
   { id: "resumo", label: "Resumo", icon: LayoutDashboard },
@@ -64,6 +80,7 @@ const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
   { id: "equipe", label: "Equipe", icon: Users },
   { id: "hierarquia", label: "Hierarquia", icon: Receipt },
   { id: "blacklist", label: "Blacklist", icon: Ban },
+  { id: "whitelist", label: "Whitelist", icon: ShieldCheck },
   { id: "catalogo", label: "Catálogo", icon: List },
   { id: "estoque", label: "Estoque", icon: Package },
   { id: "ponto", label: "Ponto", icon: Clock3 },
@@ -77,6 +94,7 @@ export function OficinaPage() {
   const [tab, setTab] = useState<Tab>("resumo");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [denied, setDenied] = useState(false);
+  const warnedPending = useRef(false);
 
   const brand = brandOf(slug);
 
@@ -86,6 +104,15 @@ export function OficinaPage() {
       .then((s) => {
         setDenied(false);
         setSummary(s);
+        const pending = s.pendingSignups ?? 0;
+        const canWarn =
+          me.isAdmin || (me.manageWorkshops ?? []).includes(s.workshop.id) || me.isDonoMec || me.isManager;
+        if (pending > 0 && canWarn && !warnedPending.current) {
+          warnedPending.current = true;
+          toast.message(
+            pending === 1 ? "1 cadastro aguardando liberação" : `${pending} cadastros aguardando liberação`,
+          );
+        }
       })
       .catch((e) => {
         const msg = e instanceof Error ? e.message : "";
@@ -134,6 +161,11 @@ export function OficinaPage() {
               }`}
             >
               <t.icon className="w-4 h-4" /> {t.label}
+              {t.id === "cadastros" && (summary?.pendingSignups ?? 0) > 0 && (
+                <span className="ml-auto min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
+                  {summary?.pendingSignups}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -166,12 +198,27 @@ export function OficinaPage() {
               className={`shrink-0 px-3 py-1.5 rounded-full text-xs ${tab === t.id ? "bg-primary text-white" : "bg-secondary text-muted-foreground"}`}
             >
               {t.label}
+              {t.id === "cadastros" && (summary?.pendingSignups ?? 0) > 0 ? ` (${summary?.pendingSignups})` : ""}
             </button>
           ))}
         </div>
 
         <main className="max-w-6xl mx-auto p-4 md:p-8 space-y-6">
-          {tab === "resumo" && <Resumo slug={slug!} summary={summary} />}
+          {canApproveSignups && (summary?.pendingSignups ?? 0) > 0 && tab !== "cadastros" && (
+            <button
+              type="button"
+              onClick={() => setTab("cadastros")}
+              className="w-full text-left rounded-xl border border-primary/40 bg-primary/10 px-4 py-3 glass"
+            >
+              <div className="font-semibold">
+                {summary!.pendingSignups === 1
+                  ? "1 cadastro aguardando liberação"
+                  : `${summary!.pendingSignups} cadastros aguardando liberação`}
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5">Clique para abrir Cadastros e liberar o acesso.</div>
+            </button>
+          )}
+          {tab === "resumo" && <Resumo slug={slug!} summary={summary} onOpenCadastros={() => setTab("cadastros")} />}
           {tab === "os" && <Ordens slug={slug!} canDelete={manage} />}
           {tab === "faturamento" && <Faturamento slug={slug!} />}
           {tab === "cadastros" && canApproveSignups && summary && (
@@ -180,6 +227,7 @@ export function OficinaPage() {
           {tab === "equipe" && <Equipe slug={slug!} manage={manage} canEditDono={isShopDono} />}
           {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} />}
           {tab === "blacklist" && <BlacklistTab slug={slug!} manage={manage} />}
+          {tab === "whitelist" && <WhitelistTab slug={slug!} manage={manage} />}
           {tab === "catalogo" && <Catalogo slug={slug!} manage={manage} />}
           {tab === "estoque" && <Estoque slug={slug!} manage={manage} />}
           {tab === "ponto" && <Ponto slug={slug!} manage={manage} />}
@@ -191,7 +239,15 @@ export function OficinaPage() {
   );
 }
 
-function Resumo({ slug, summary }: { slug: string; summary: Summary | null }) {
+function Resumo({
+  slug,
+  summary,
+  onOpenCadastros,
+}: {
+  slug: string;
+  summary: Summary | null;
+  onOpenCadastros?: () => void;
+}) {
   const brand = brandOf(slug);
   const today = Number(summary?.today?.total ?? 0);
   const month = Number(summary?.month?.total ?? 0);
@@ -210,11 +266,20 @@ function Resumo({ slug, summary }: { slug: string; summary: Summary | null }) {
           { label: "Mês", value: money(month), sub: `${Number(summary?.month?.count ?? 0)} OS` },
           { label: "Equipe ativa", value: String(summary?.staff ?? 0), sub: "funcionários" },
           { label: "Blacklist", value: String(summary?.blacklistActive ?? 0), sub: "ativas agora" },
-          { label: "Cadastros", value: String(summary?.pendingSignups ?? 0), sub: "aguardando liberação" },
+          {
+            label: "Cadastros",
+            value: String(summary?.pendingSignups ?? 0),
+            sub: "aguardando liberação",
+            onClick: (summary?.pendingSignups ?? 0) > 0 ? onOpenCadastros : undefined,
+          },
           { label: "Farm", value: String(summary?.farmPending ?? 0), sub: "pendentes de confirmação" },
           { label: "Ponto aberto", value: String(summary?.pontoOpen ?? 0), sub: "em expediente agora" },
         ].map((s) => (
-          <Card key={s.label} className="p-5 glass shop-ring hover-lift">
+          <Card
+            key={s.label}
+            className={`p-5 glass shop-ring hover-lift ${s.onClick ? "cursor-pointer" : ""}`}
+            onClick={s.onClick}
+          >
             <div className="text-xs uppercase tracking-wider text-muted-foreground">{s.label}</div>
             <div className="text-2xl font-extrabold stat-num mt-1">{s.value}</div>
             <div className="text-xs text-muted-foreground mt-1">{s.sub}</div>
@@ -230,6 +295,7 @@ function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<ServiceOrder | null>(null);
+  const [history, setHistory] = useState<PlateHistory | null>(null);
 
   async function load() {
     setRows(await api<ServiceOrder[]>(`/workshop/${slug}/orders${q ? `?q=${encodeURIComponent(q)}` : ""}`));
@@ -246,6 +312,19 @@ function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
     }
   }
 
+  async function openHistory(plate: string) {
+    const p = plate.trim().toUpperCase();
+    if (!p) {
+      toast.error("Informe a placa");
+      return;
+    }
+    try {
+      setHistory(await api<PlateHistory>(`/workshop/${slug}/plates/${encodeURIComponent(p)}`));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -254,6 +333,9 @@ function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
           <Input placeholder="Placa ou dono" value={q} onChange={(e) => setQ(e.target.value)} className="w-48" />
           <Button variant="outline" onClick={() => void load()}>
             Buscar
+          </Button>
+          <Button variant="outline" onClick={() => void openHistory(q)}>
+            Histórico da placa
           </Button>
           <Button onClick={() => setOpen(true)}>
             <Plus className="w-4 h-4" /> Nova OS
@@ -276,6 +358,9 @@ function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
               </div>
             </div>
             <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <Button size="sm" variant="outline" onClick={() => void openHistory(o.plate)}>
+                Histórico
+              </Button>
               <div className="font-bold text-primary">{money(o.total)}</div>
               {canDelete && (
                 <Button
@@ -329,6 +414,16 @@ function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
           {detail.notes && <p className="text-sm text-muted-foreground">{detail.notes}</p>}
           <div className="text-xl font-extrabold">{money(detail.total)}</div>
           <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                const plate = detail.plate;
+                setDetail(null);
+                void openHistory(plate);
+              }}
+            >
+              Histórico da placa
+            </Button>
             <Button variant="outline" onClick={() => setDetail(null)}>
               Fechar
             </Button>
@@ -352,7 +447,70 @@ function Ordens({ slug, canDelete }: { slug: string; canDelete: boolean }) {
           </div>
         </Modal>
       )}
+      {history && (
+        <HistoricoPlaca
+          history={history}
+          onClose={() => setHistory(null)}
+          onOpenOrder={(id) => {
+            setHistory(null);
+            void openDetail(id);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function HistoricoPlaca({
+  history,
+  onClose,
+  onOpenOrder,
+}: {
+  history: PlateHistory;
+  onClose: () => void;
+  onOpenOrder: (id: string) => void;
+}) {
+  return (
+    <Modal onClose={onClose} className="max-w-2xl">
+      <h3 className="text-lg font-bold">Histórico · {history.plate}</h3>
+      <p className="text-sm text-muted-foreground">
+        {history.count} OS · total {money(history.total)}
+        {history.lastClient ? ` · último dono ${history.lastClient}` : ""}
+      </p>
+      {history.orders.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nenhuma OS nesta placa nesta mecânica.</p>
+      ) : (
+        <div className="space-y-3 max-h-[60vh] overflow-auto pr-1">
+          {history.orders.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              className="w-full text-left rounded-lg border border-border/60 p-3 hover:bg-accent/40"
+              onClick={() => onOpenOrder(o.id)}
+            >
+              <div className="flex justify-between gap-2">
+                <div className="font-medium">{o.clientName}</div>
+                <div className="font-bold text-primary">{money(o.total)}</div>
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Mecânico {o.mechanicName} · {when(o.createdAt)}
+                {o.paymentMethod ? ` · ${o.paymentMethod}` : ""}
+              </div>
+              <div className="text-xs text-muted-foreground mt-2 space-y-1">
+                {(o.items ?? []).map((it, i) => (
+                  <div key={i}>
+                    {kindLabel(it.kind)} · {it.name} × {it.quantity}
+                  </div>
+                ))}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+      <Button variant="outline" onClick={onClose}>
+        Fechar
+      </Button>
+    </Modal>
   );
 }
 
@@ -373,6 +531,7 @@ function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void;
   const [products, setProducts] = useState<Product[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [plateHint, setPlateHint] = useState<PlateHistory | null>(null);
 
   useEffect(() => {
     api<Product[]>(`/workshop/${slug}/products`).then(setProducts).catch(() => {});
@@ -409,7 +568,26 @@ function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void;
           </div>
           <div className="space-y-1">
             <Label>Placa</Label>
-            <Input value={plate} onChange={(e) => setPlate(e.target.value.toUpperCase())} required />
+            <Input
+              value={plate}
+              onChange={(e) => setPlate(e.target.value.toUpperCase())}
+              onBlur={() => {
+                const p = plate.trim().toUpperCase();
+                if (p.length < 3) {
+                  setPlateHint(null);
+                  return;
+                }
+                api<PlateHistory>(`/workshop/${slug}/plates/${encodeURIComponent(p)}`)
+                  .then((h) => setPlateHint(h.count ? h : null))
+                  .catch(() => setPlateHint(null));
+              }}
+              required
+            />
+            {plateHint && plateHint.count > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Já tem {plateHint.count} OS nesta placa · último dono {plateHint.lastClient || "—"} · {money(plateHint.total)}
+              </p>
+            )}
           </div>
         </div>
         <div className="space-y-2">
@@ -749,8 +927,14 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
                   let last: { status: string; updated: number; missing: string[]; error: string | null } | null = null;
                   while (Date.now() < deadline) {
                     await new Promise((r) => setTimeout(r, 2000));
-                    last = await api(`/workshop/${slug}/employees/sync-nicks/${started.actionId}`);
-                    if (last.status === "sent" || last.status === "failed") break;
+                    const status = await api<{
+                      status: string;
+                      updated: number;
+                      missing: string[];
+                      error: string | null;
+                    }>(`/workshop/${slug}/employees/sync-nicks/${started.actionId}`);
+                    last = status;
+                    if (status.status === "sent" || status.status === "failed") break;
                   }
                   await load();
                   if (last?.status === "sent") {
@@ -1047,6 +1231,88 @@ function BlacklistTab({ slug, manage }: { slug: string; manage: boolean }) {
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+function WhitelistTab({ slug, manage }: { slug: string; manage: boolean }) {
+  const [rows, setRows] = useState<Whitelist[]>([]);
+  const [name, setName] = useState("");
+  const [discordId, setDiscordId] = useState("");
+  const [note, setNote] = useState("");
+
+  async function load() {
+    setRows(await api<Whitelist[]>(`/workshop/${slug}/whitelist`));
+  }
+  useEffect(() => {
+    load().catch((e) => toast.error(e.message));
+  }, [slug]);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    try {
+      await api(`/workshop/${slug}/whitelist`, { method: "POST", body: JSON.stringify({ name, discordId, note }) });
+      toast.success("Incluído na whitelist. O Discord recebe o aviso se o webhook estiver no Admin.");
+      setName("");
+      setDiscordId("");
+      setNote("");
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha");
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold">Whitelist</h2>
+      <p className="text-sm text-muted-foreground">
+        Quem está liberado nesta mecânica. Incluir manda embed no webhook de whitelist. Quem está na blacklist ativa não entra.
+      </p>
+      {manage && (
+        <Card className="p-4 glass">
+          <form onSubmit={add} className="grid md:grid-cols-2 gap-2">
+            <Input placeholder="Nome" value={name} onChange={(e) => setName(e.target.value)} required />
+            <Input
+              placeholder="Discord ID"
+              value={discordId}
+              onChange={(e) => setDiscordId(e.target.value.replace(/\D/g, ""))}
+              required
+            />
+            <Input
+              className="md:col-span-2"
+              placeholder="Nota (opcional)"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <Button className="md:col-span-2">Liberar na whitelist</Button>
+          </form>
+        </Card>
+      )}
+      {rows.map((w) => (
+        <Card key={w.id} className="p-4 glass flex flex-wrap justify-between gap-3">
+          <div>
+            <div className="font-medium">{w.name}</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              Discord {w.discordId} · {when(w.createdAt)}
+            </div>
+            {w.note && <div className="text-sm text-muted-foreground mt-1">{w.note}</div>}
+          </div>
+          {manage && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                api(`/workshop/${slug}/whitelist/${w.id}`, { method: "DELETE" })
+                  .then(() => load())
+                  .catch((e) => toast.error(e.message))
+              }
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
+        </Card>
+      ))}
+      {rows.length === 0 && <p className="text-sm text-muted-foreground">Ninguém na whitelist ainda.</p>}
     </div>
   );
 }

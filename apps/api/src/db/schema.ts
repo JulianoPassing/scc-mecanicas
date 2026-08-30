@@ -136,6 +136,18 @@ export const hierarchyRoles = pgTable("hierarchy_roles", {
   sortOrder: integer("sort_order").notNull().default(0),
 });
 
+export const whitelists = pgTable("whitelists", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  discordId: text("discord_id").notNull(),
+  note: text("note"),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const blacklists = pgTable("blacklists", {
   id: uuid("id").defaultRandom().primaryKey(),
   workshopId: uuid("workshop_id")

@@ -61,6 +61,22 @@ export type Blacklist = {
   endsAt: string;
 };
 
+export type Whitelist = {
+  id: string;
+  name: string;
+  discordId: string;
+  note: string | null;
+  createdAt: string;
+};
+
+export type PlateHistory = {
+  plate: string;
+  count: number;
+  total: number;
+  lastClient: string | null;
+  orders: ServiceOrder[];
+};
+
 export type Product = { id: string; name: string; price: number; stock: number };
 
 export type PontoRow = {

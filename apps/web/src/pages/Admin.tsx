@@ -14,6 +14,7 @@ export function AdminPage() {
   const { me, loading, logout } = useAuth();
   const shopOnly = !!me && !me.isAdmin && (me.isDonoMec || me.isManager);
   const [tab, setTab] = useState<"users" | "workshops">("users");
+  const pending = usePendingSignupCount();
 
   if (loading) {
     return (
@@ -45,6 +46,7 @@ export function AdminPage() {
       </header>
       <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-4 anim-up">
         <ShopLinks />
+        {tab !== "users" && <PendingSignupBanner pending={pending} onOpenCadastros={() => setTab("users")} />}
         {shopOnly && (
           <p className="text-sm text-muted-foreground">
             Você vê só os cadastros da sua mecânica. Liberar coloca a pessoa na equipe.
@@ -54,6 +56,11 @@ export function AdminPage() {
         <div className="flex gap-2">
           <Button variant={tab === "users" ? "default" : "outline"} size="sm" onClick={() => setTab("users")}>
             Cadastros
+            {pending > 0 && (
+              <span className="ml-1 min-w-5 h-5 px-1 rounded-full bg-background/20 text-[10px] font-bold inline-flex items-center justify-center">
+                {pending}
+              </span>
+            )}
           </Button>
           {me.isAdmin && (
             <Button variant={tab === "workshops" ? "default" : "outline"} size="sm" onClick={() => setTab("workshops")}>
@@ -68,6 +75,30 @@ export function AdminPage() {
         )}
       </main>
     </div>
+  );
+}
+
+function usePendingSignupCount() {
+  const [pending, setPending] = useState(0);
+  useEffect(() => {
+    api<AdminUser[]>("/admin/users")
+      .then((users) => setPending(users.filter((u) => !u.approved).length))
+      .catch(() => {});
+  }, []);
+  return pending;
+}
+
+function PendingSignupBanner({ pending, onOpenCadastros }: { pending: number; onOpenCadastros: () => void }) {
+  if (pending <= 0) return null;
+  return (
+    <button type="button" onClick={onOpenCadastros} className="w-full text-left">
+      <Card className="p-4 glass border-primary/40 bg-primary/10">
+        <div className="font-semibold">
+          {pending === 1 ? "1 cadastro aguardando liberação" : `${pending} cadastros aguardando liberação`}
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">Clique para abrir Cadastros e liberar o acesso.</p>
+      </Card>
+    </button>
   );
 }
 

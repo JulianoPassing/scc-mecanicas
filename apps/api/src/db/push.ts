@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS hierarchy_roles (
   sort_order integer NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS whitelists (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  discord_id text NOT NULL,
+  note text,
+  created_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS whitelists_workshop_discord ON whitelists (workshop_id, discord_id);
+
 CREATE TABLE IF NOT EXISTS blacklists (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,

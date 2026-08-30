@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
-import { eq, ilike } from "drizzle-orm";
+import { and, eq, gte, ilike } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { users, workshops } from "../db/schema.js";
+import { blacklists, users, workshops } from "../db/schema.js";
 import {
   clearCookieHeader,
   cookieHeader,
@@ -13,6 +13,7 @@ import {
   verifyPassword,
   verifyToken,
 } from "../auth.js";
+import { sendWebhook } from "../discord.js";
 import { loadMe } from "../me.js";
 
 export const auth = new Hono();
@@ -51,6 +52,19 @@ auth.post("/register", async (c) => {
   const [ws] = await db.select().from(workshops).where(eq(workshops.id, parsed.data.workshopId)).limit(1);
   if (!ws) return c.json({ error: "Mecânica não encontrada" }, 404);
 
+  const [blocked] = await db
+    .select({ id: blacklists.id })
+    .from(blacklists)
+    .where(
+      and(
+        eq(blacklists.workshopId, ws.id),
+        eq(blacklists.discordId, parsed.data.discordId),
+        gte(blacklists.endsAt, new Date()),
+      ),
+    )
+    .limit(1);
+  if (blocked) return c.json({ error: "Esse Discord está na blacklist desta mecânica" }, 403);
+
   const [byUser] = await db.select({ id: users.id }).from(users).where(ilike(users.username, username)).limit(1);
   if (byUser) return c.json({ error: "Usuário já está em uso" }, 409);
 
@@ -69,6 +83,19 @@ auth.post("/register", async (c) => {
     approved: false,
     requestedWorkshopId: ws.id,
   });
+
+  sendWebhook(
+    ws.staffEventsWebhookUrl,
+    {
+      title: `Cadastro pendente — ${ws.name}`,
+      description: `**${username}** pediu acesso. Liberar no painel em **Cadastros**.`,
+      fields: [
+        { name: "Usuário", value: username, inline: true },
+        { name: "Discord", value: `<@${parsed.data.discordId}> · ${parsed.data.discordId}`, inline: true },
+      ],
+    },
+    ws,
+  );
 
   return c.json({ ok: true, pendingApproval: true });
 });
