@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Modal } from "@/components/modal";
 import { api, setToken, type Me, type Workshop } from "@/lib/api";
 import { brandOf } from "@/lib/brands";
 
@@ -114,8 +115,7 @@ export function HomePage() {
 function AuthDialog({ onClose, onLogged }: { onClose: () => void; onLogged: () => Promise<void> }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 anim-in" onClick={onClose}>
-      <Card className="w-full max-w-md p-6 space-y-4 glass shop-ring" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose} className="max-w-md">
         <div>
           <h2 className="text-lg font-semibold">{mode === "signin" ? "Entrar" : "Criar conta"}</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -142,8 +142,7 @@ function AuthDialog({ onClose, onLogged }: { onClose: () => void; onLogged: () =
             </>
           )}
         </div>
-      </Card>
-    </div>
+    </Modal>
   );
 }
 

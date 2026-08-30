@@ -5,6 +5,7 @@ import {
   Ban,
   Clock3,
   LayoutDashboard,
+  List,
   LogOut,
   Package,
   Plus,
@@ -21,10 +22,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Modal } from "@/components/modal";
 import {
   api,
   type Billing,
   type Blacklist,
+  type CatalogItem,
   type Employee,
   type FarmRow,
   type HierarchyRole,
@@ -45,7 +48,7 @@ function Splash() {
   );
 }
 
-type Tab = "resumo" | "os" | "faturamento" | "equipe" | "hierarquia" | "blacklist" | "estoque" | "ponto" | "farm";
+type Tab = "resumo" | "os" | "faturamento" | "equipe" | "hierarquia" | "blacklist" | "catalogo" | "estoque" | "ponto" | "farm";
 
 const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
   { id: "resumo", label: "Resumo", icon: LayoutDashboard },
@@ -54,6 +57,7 @@ const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
   { id: "equipe", label: "Equipe", icon: Users },
   { id: "hierarquia", label: "Hierarquia", icon: Receipt },
   { id: "blacklist", label: "Blacklist", icon: Ban },
+  { id: "catalogo", label: "Catálogo", icon: List },
   { id: "estoque", label: "Estoque", icon: Package },
   { id: "ponto", label: "Ponto", icon: Clock3 },
   { id: "farm", label: "Farm", icon: Sprout },
@@ -153,13 +157,14 @@ export function OficinaPage() {
           ))}
         </div>
 
-        <main className="max-w-6xl mx-auto p-4 md:p-8 space-y-6 anim-up">
+        <main className="max-w-6xl mx-auto p-4 md:p-8 space-y-6">
           {tab === "resumo" && <Resumo slug={slug!} summary={summary} />}
           {tab === "os" && <Ordens slug={slug!} />}
           {tab === "faturamento" && <Faturamento slug={slug!} />}
           {tab === "equipe" && <Equipe slug={slug!} manage={manage} />}
           {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} />}
           {tab === "blacklist" && <BlacklistTab slug={slug!} manage={manage} />}
+          {tab === "catalogo" && <Catalogo slug={slug!} manage={manage} />}
           {tab === "estoque" && <Estoque slug={slug!} manage={manage} />}
           {tab === "ponto" && <Ponto slug={slug!} />}
           {tab === "farm" && <Farm slug={slug!} manage={manage} />}
@@ -204,6 +209,7 @@ function Ordens({ slug }: { slug: string }) {
   const [rows, setRows] = useState<ServiceOrder[]>([]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<ServiceOrder | null>(null);
 
   async function load() {
     setRows(await api<ServiceOrder[]>(`/workshop/${slug}/orders${q ? `?q=${encodeURIComponent(q)}` : ""}`));
@@ -211,6 +217,14 @@ function Ordens({ slug }: { slug: string }) {
   useEffect(() => {
     load().catch((e) => toast.error(e.message));
   }, [slug]);
+
+  async function openDetail(id: string) {
+    try {
+      setDetail(await api<ServiceOrder>(`/workshop/${slug}/orders/${id}`));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -228,7 +242,11 @@ function Ordens({ slug }: { slug: string }) {
       </div>
       <div className="space-y-2">
         {rows.map((o) => (
-          <Card key={o.id} className="p-4 glass flex flex-wrap items-center justify-between gap-3 hover-lift">
+          <Card
+            key={o.id}
+            className="p-4 glass flex flex-wrap items-center justify-between gap-3 hover-lift cursor-pointer"
+            onClick={() => void openDetail(o.id)}
+          >
             <div>
               <div className="font-semibold">
                 {o.plate} <span className="text-muted-foreground font-normal">· {o.clientName}</span>
@@ -252,20 +270,55 @@ function Ordens({ slug }: { slug: string }) {
           }}
         />
       )}
+      {detail && (
+        <Modal onClose={() => setDetail(null)}>
+          <h3 className="text-lg font-bold">OS · {detail.plate}</h3>
+          <p className="text-sm text-muted-foreground">
+            Dono {detail.clientName} · Mecânico {detail.mechanicName} · {when(detail.createdAt)}
+            {detail.paymentMethod ? ` · ${detail.paymentMethod}` : ""}
+          </p>
+          <div className="space-y-2">
+            {(detail.items ?? []).map((it, i) => (
+              <div key={i} className="flex justify-between text-sm border-b border-border/60 pb-2">
+                <span>
+                  {kindLabel(it.kind)} · {it.name} × {it.quantity}
+                </span>
+                <span className="font-medium">{money(it.unitPrice * it.quantity)}</span>
+              </div>
+            ))}
+          </div>
+          {detail.notes && <p className="text-sm text-muted-foreground">{detail.notes}</p>}
+          <div className="text-xl font-extrabold">{money(detail.total)}</div>
+          <Button variant="outline" onClick={() => setDetail(null)}>
+            Fechar
+          </Button>
+        </Modal>
+      )}
     </div>
   );
+}
+
+function kindLabel(k: string) {
+  if (k === "install") return "Instalar";
+  if (k === "remove") return "Remover";
+  if (k === "repair") return "Reparo";
+  if (k === "product") return "Peça";
+  return k;
 }
 
 function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void; onSaved: () => void }) {
   const [clientName, setClientName] = useState("");
   const [plate, setPlate] = useState("");
   const [notes, setNotes] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("Dinheiro");
   const [items, setItems] = useState<OrderItem[]>([{ kind: "install", name: "", quantity: 1, unitPrice: 0 }]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     api<Product[]>(`/workshop/${slug}/products`).then(setProducts).catch(() => {});
+    api<CatalogItem[]>(`/workshop/${slug}/catalog`).then(setCatalog).catch(() => {});
   }, [slug]);
 
   const total = items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
@@ -276,7 +329,7 @@ function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void;
     try {
       await api(`/workshop/${slug}/orders`, {
         method: "POST",
-        body: JSON.stringify({ clientName, plate, notes, items }),
+        body: JSON.stringify({ clientName, plate, notes, paymentMethod, items }),
       });
       toast.success("OS lançada");
       onSaved();
@@ -288,33 +341,35 @@ function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void;
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 anim-in" onClick={onClose}>
-      <Card className="w-full max-w-2xl p-6 space-y-4 glass max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-lg font-bold">Nova ordem de serviço</h3>
-        <form onSubmit={submit} className="space-y-3">
-          <div className="grid md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>Dono do veículo</Label>
-              <Input value={clientName} onChange={(e) => setClientName(e.target.value)} required />
-            </div>
-            <div className="space-y-1">
-              <Label>Placa</Label>
-              <Input value={plate} onChange={(e) => setPlate(e.target.value.toUpperCase())} required />
-            </div>
+    <Modal onClose={onClose}>
+      <h3 className="text-lg font-bold">Nova ordem de serviço</h3>
+      <form onSubmit={submit} className="space-y-3">
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label>Dono do veículo</Label>
+            <Input value={clientName} onChange={(e) => setClientName(e.target.value)} required />
           </div>
-          <div className="space-y-2">
-            {items.map((it, i) => (
+          <div className="space-y-1">
+            <Label>Placa</Label>
+            <Input value={plate} onChange={(e) => setPlate(e.target.value.toUpperCase())} required />
+          </div>
+        </div>
+        <div className="space-y-2">
+          {items.map((it, i) => {
+            const opts = catalog.filter((c) => c.kind === it.kind);
+            return (
               <div key={i} className="grid grid-cols-12 gap-2 items-end">
                 <select
                   className="col-span-3 h-9 rounded-md border border-input bg-transparent px-2 text-xs"
                   value={it.kind}
                   onChange={(e) => {
                     const kind = e.target.value as OrderItem["kind"];
-                    setItems((list) => list.map((x, n) => (n === i ? { ...x, kind } : x)));
+                    setItems((list) => list.map((x, n) => (n === i ? { ...x, kind, name: "", unitPrice: 0 } : x)));
                   }}
                 >
                   <option value="install">Instalar</option>
                   <option value="remove">Remover</option>
+                  <option value="repair">Reparo</option>
                   <option value="product">Peça</option>
                 </select>
                 {it.kind === "product" ? (
@@ -335,10 +390,28 @@ function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void;
                       </option>
                     ))}
                   </select>
+                ) : opts.length > 0 ? (
+                  <select
+                    className="col-span-5 h-9 rounded-md border border-input bg-transparent px-2 text-xs"
+                    value={it.name}
+                    onChange={(e) => {
+                      const c = opts.find((x) => x.name === e.target.value);
+                      setItems((list) =>
+                        list.map((x, n) => (n === i ? { ...x, name: e.target.value, unitPrice: c?.price ?? x.unitPrice } : x)),
+                      );
+                    }}
+                  >
+                    <option value="">Serviço do catálogo</option>
+                    {opts.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name} ({money(c.price)})
+                      </option>
+                    ))}
+                  </select>
                 ) : (
                   <Input
                     className="col-span-5"
-                    placeholder="Serviço"
+                    placeholder="Serviço (cadastre no Catálogo)"
                     value={it.name}
                     onChange={(e) => setItems((list) => list.map((x, n) => (n === i ? { ...x, name: e.target.value } : x)))}
                   />
@@ -362,32 +435,47 @@ function NovaOs({ slug, onClose, onSaved }: { slug: string; onClose: () => void;
                   }
                 />
               </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setItems((l) => [...l, { kind: "install", name: "", quantity: 1, unitPrice: 0 }])}
+            );
+          })}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setItems((l) => [...l, { kind: "install", name: "", quantity: 1, unitPrice: 0 }])}
+          >
+            <Plus className="w-3 h-3" /> Item
+          </Button>
+        </div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label>Pagamento</Label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value)}
             >
-              <Plus className="w-3 h-3" /> Item
-            </Button>
+              <option>Dinheiro</option>
+              <option>PIX</option>
+              <option>Cartão</option>
+              <option>Transferência</option>
+            </select>
           </div>
           <div className="space-y-1">
             <Label>Obs.</Label>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
-          <div className="flex items-center justify-between pt-2">
-            <div className="text-lg font-extrabold">{money(total)}</div>
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" onClick={onClose}>
-                Cancelar
-              </Button>
-              <Button disabled={loading}>{loading ? "Salvando…" : "Lançar OS"}</Button>
-            </div>
+        </div>
+        <div className="flex items-center justify-between pt-2">
+          <div className="text-lg font-extrabold">{money(total)}</div>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancelar
+            </Button>
+            <Button disabled={loading}>{loading ? "Salvando…" : "Lançar OS"}</Button>
           </div>
-        </form>
-      </Card>
-    </div>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -664,6 +752,83 @@ function BlacklistTab({ slug, manage }: { slug: string; manage: boolean }) {
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+function Catalogo({ slug, manage }: { slug: string; manage: boolean }) {
+  const [rows, setRows] = useState<CatalogItem[]>([]);
+  const [kind, setKind] = useState<CatalogItem["kind"]>("install");
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState(0);
+
+  async function load() {
+    setRows(await api<CatalogItem[]>(`/workshop/${slug}/catalog`));
+  }
+  useEffect(() => {
+    load().catch((e) => toast.error(e.message));
+  }, [slug]);
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold">Catálogo de serviços</h2>
+      <p className="text-sm text-muted-foreground">
+        Preços de instalar, remover e reparo. A OS busca daqui, como no sistema antigo.
+      </p>
+      {manage && (
+        <Card className="p-4 glass">
+          <form
+            className="grid md:grid-cols-4 gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              api(`/workshop/${slug}/catalog`, { method: "POST", body: JSON.stringify({ kind, name, price }) })
+                .then(() => {
+                  toast.success("Item no catálogo");
+                  setName("");
+                  void load();
+                })
+                .catch((err) => toast.error(err.message));
+            }}
+          >
+            <select
+              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
+              value={kind}
+              onChange={(e) => setKind(e.target.value as CatalogItem["kind"])}
+            >
+              <option value="install">Instalar</option>
+              <option value="remove">Remover</option>
+              <option value="repair">Reparo</option>
+            </select>
+            <Input placeholder="Nome" value={name} onChange={(e) => setName(e.target.value)} required />
+            <Input type="number" min={0} value={price} onChange={(e) => setPrice(Number(e.target.value))} />
+            <Button>Adicionar</Button>
+          </form>
+        </Card>
+      )}
+      {rows.map((r) => (
+        <Card key={r.id} className="p-4 glass flex justify-between gap-3">
+          <div>
+            <div className="font-medium">{r.name}</div>
+            <div className="text-xs text-muted-foreground">
+              {kindLabel(r.kind)} · {money(r.price)}
+            </div>
+          </div>
+          {manage && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                api(`/workshop/${slug}/catalog/${r.id}`, { method: "DELETE" })
+                  .then(() => load())
+                  .catch((e) => toast.error(e.message))
+              }
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
+        </Card>
+      ))}
+      {rows.length === 0 && <p className="text-sm text-muted-foreground">Nenhum item no catálogo ainda.</p>}
     </div>
   );
 }

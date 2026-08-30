@@ -30,11 +30,15 @@ export type ServiceOrder = {
   clientName: string;
   plate: string;
   notes: string | null;
+  paymentMethod?: string | null;
   total: number;
   createdAt: string;
+  items?: OrderItem[];
 };
 
-export type OrderItem = { kind: "install" | "remove" | "product"; name: string; quantity: number; unitPrice: number };
+export type OrderItem = { kind: "install" | "remove" | "repair" | "product"; name: string; quantity: number; unitPrice: number };
+
+export type CatalogItem = { id: string; kind: "install" | "remove" | "repair"; name: string; price: number };
 
 export type Employee = {
   id: string;

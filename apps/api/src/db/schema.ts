@@ -74,6 +74,17 @@ export const employees = pgTable("employees", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const catalogItems = pgTable("catalog_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  price: integer("price").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const products = pgTable("products", {
   id: uuid("id").defaultRandom().primaryKey(),
   workshopId: uuid("workshop_id")
@@ -95,6 +106,7 @@ export const serviceOrders = pgTable("service_orders", {
   clientName: text("client_name").notNull(),
   plate: text("plate").notNull(),
   notes: text("notes"),
+  paymentMethod: text("payment_method"),
   total: integer("total").notNull().default(0),
   createdBy: uuid("created_by").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -100,6 +100,21 @@ function UsersTab() {
     load().catch((e) => toast.error(e.message));
   }, []);
 
+  async function saveAccess(u: AdminUser) {
+    const role = roles[u.id] || u.roles.find((r) => r.role !== "owner")?.role || "mechanic";
+    const workshopId = wsPick[u.id] || u.requestedWorkshopId;
+    try {
+      await api(`/admin/users/${u.id}/access`, {
+        method: "POST",
+        body: JSON.stringify({ role, workshopId }),
+      });
+      toast.success("Cargo e mecânica atualizados");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+
   async function approve(u: AdminUser, approved: boolean) {
     const role = roles[u.id] || "mechanic";
     const workshopId = wsPick[u.id] || u.requestedWorkshopId;
@@ -117,7 +132,10 @@ function UsersTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">Libere quem se cadastrou no site. Escolha cargo e mecânica.</p>
+      <p className="text-sm text-muted-foreground">
+        Libere o cadastro escolhendo cargo e mecânica. Em quem já está liberado, mude os selects e clique em{" "}
+        <strong>Salvar cargo</strong>.
+      </p>
       {users.map((u) => (
         <Card key={u.id} className="p-4 flex flex-col md:flex-row md:items-center gap-3 justify-between">
           <div className="text-sm">
@@ -133,7 +151,7 @@ function UsersTab() {
           <div className="flex flex-wrap items-center gap-2">
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-              value={roles[u.id] ?? "mechanic"}
+              value={roles[u.id] ?? u.roles.find((r) => r.role !== "owner")?.role ?? "mechanic"}
               onChange={(e) => setRoles((s) => ({ ...s, [u.id]: e.target.value }))}
             >
               <option value="mechanic">Mecânico</option>
@@ -154,9 +172,14 @@ function UsersTab() {
               ))}
             </select>
             {u.approved ? (
-              <Button size="sm" variant="outline" onClick={() => void approve(u, false)}>
-                Revogar
-              </Button>
+              <>
+                <Button size="sm" onClick={() => void saveAccess(u)}>
+                  Salvar cargo
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void approve(u, false)}>
+                  Revogar
+                </Button>
+              </>
             ) : (
               <Button size="sm" onClick={() => void approve(u, true)}>
                 Liberar

@@ -133,6 +133,67 @@ admin.post("/users/:id/approve", async (c) => {
   return c.json({ ok: true });
 });
 
+admin.post("/users/:id/access", async (c) => {
+  const me = meOf(c);
+  const userId = c.req.param("id");
+  const parsed = z
+    .object({
+      role: z.enum(["mechanic", "manager_mec", "dono_mec", "admin"]),
+      workshopId: z.string().uuid().nullable().optional(),
+    })
+    .safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Selecione cargo e mecânica" }, 400);
+
+  const [target] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!target) return c.json({ error: "Usuário não encontrado" }, 404);
+  if (target.username === "owner" || target.discordId === "owner-seed") {
+    return c.json({ error: "Não dá para alterar o owner" }, 403);
+  }
+
+  const workshopId = parsed.data.workshopId ?? target.requestedWorkshopId;
+  if (parsed.data.role === "admin" && !me.isOwner) return c.json({ error: "Apenas o owner pode promover admin" }, 403);
+  if (parsed.data.role === "dono_mec" && !me.isAdmin) return c.json({ error: "Apenas admin pode nomear dono" }, 403);
+  if (!canApprove(me, workshopId)) return c.json({ error: "Sem permissão nesta mecânica" }, 403);
+
+  const scoped = parsed.data.role !== "admin";
+  if (scoped && !workshopId) return c.json({ error: "Selecione a mecânica" }, 400);
+
+  await db.update(users).set({ approved: true, requestedWorkshopId: workshopId ?? target.requestedWorkshopId }).where(eq(users.id, userId));
+  await db.delete(userRoles).where(eq(userRoles.userId, userId));
+  await db.insert(userRoles).values({
+    userId,
+    role: parsed.data.role,
+    workshopId: scoped ? workshopId : null,
+  });
+
+  if (workshopId) {
+    const emps = await db.select().from(employees).where(eq(employees.userId, userId));
+    for (const emp of emps) {
+      if (emp.workshopId !== workshopId) {
+        await db.update(employees).set({ status: "inactive" }).where(eq(employees.id, emp.id));
+      }
+    }
+    const [emp] = await db
+      .select()
+      .from(employees)
+      .where(and(eq(employees.workshopId, workshopId), eq(employees.discordId, target.discordId)))
+      .limit(1);
+    if (!emp) {
+      await db.insert(employees).values({
+        userId: target.id,
+        workshopId,
+        name: target.displayName || target.username,
+        discordId: target.discordId,
+        status: "active",
+      });
+    } else {
+      await db.update(employees).set({ userId: target.id, status: "active" }).where(eq(employees.id, emp.id));
+    }
+  }
+
+  return c.json({ ok: true });
+});
+
 admin.get("/workshops", async (c) => {
   const me = meOf(c);
   if (!me.isAdmin && !me.isDonoMec) return c.json({ error: "Acesso negado" }, 403);

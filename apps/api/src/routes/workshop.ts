@@ -5,6 +5,7 @@ import { db } from "../db/index.js";
 import {
   blacklists,
   botActions,
+  catalogItems,
   employees,
   farmEntries,
   hierarchyRoles,
@@ -105,10 +106,11 @@ workshopApi.post("/:slug/orders", async (c) => {
       clientName: z.string().trim().min(1).max(80),
       plate: z.string().trim().min(1).max(16),
       notes: z.string().trim().max(500).optional(),
+      paymentMethod: z.string().trim().max(40).optional(),
       items: z
         .array(
           z.object({
-            kind: z.enum(["install", "remove", "product"]),
+            kind: z.enum(["install", "remove", "repair", "product"]),
             name: z.string().trim().min(1).max(80),
             quantity: z.number().int().min(1).max(99),
             unitPrice: z.number().int().min(0).max(9_999_999),
@@ -131,6 +133,7 @@ workshopApi.post("/:slug/orders", async (c) => {
       clientName: parsed.data.clientName,
       plate: parsed.data.plate.toUpperCase(),
       notes: parsed.data.notes ?? null,
+      paymentMethod: parsed.data.paymentMethod ?? null,
       total,
       createdBy: me.id,
     })
@@ -532,4 +535,37 @@ workshopApi.patch("/:slug/farm/:id", async (c) => {
     .where(and(eq(farmEntries.id, c.req.param("id")), eq(farmEntries.workshopId, ws.id)))
     .returning();
   return c.json(row);
+});
+
+workshopApi.get("/:slug/catalog", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { ws } = g as { ws: typeof workshops.$inferSelect };
+  return c.json(await db.select().from(catalogItems).where(eq(catalogItems.workshopId, ws.id)).orderBy(catalogItems.name));
+});
+
+workshopApi.post("/:slug/catalog", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  const parsed = z
+    .object({
+      kind: z.enum(["install", "remove", "repair"]),
+      name: z.string().trim().min(1).max(80),
+      price: z.number().int().min(0),
+    })
+    .safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
+  const [row] = await db.insert(catalogItems).values({ workshopId: ws.id, ...parsed.data }).returning();
+  return c.json(row, 201);
+});
+
+workshopApi.delete("/:slug/catalog/:id", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
+  await db.delete(catalogItems).where(and(eq(catalogItems.id, c.req.param("id")), eq(catalogItems.workshopId, ws.id)));
+  return c.json({ ok: true });
 });
