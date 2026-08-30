@@ -23,6 +23,69 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export type Workshop = { id: string; slug: string; name: string; primaryColor: string };
 
+export type ServiceOrder = {
+  id: string;
+  workshopId: string;
+  mechanicName: string;
+  clientName: string;
+  plate: string;
+  notes: string | null;
+  total: number;
+  createdAt: string;
+};
+
+export type OrderItem = { kind: "install" | "remove" | "product"; name: string; quantity: number; unitPrice: number };
+
+export type Employee = {
+  id: string;
+  name: string;
+  discordId: string;
+  roleLabel: string | null;
+  status: string;
+};
+
+export type HierarchyRole = { id?: string; label: string; nicknamePrefix: string | null; discordRoleId: string | null };
+
+export type Blacklist = {
+  id: string;
+  employeeName: string;
+  discordId: string | null;
+  reason: string;
+  days: number;
+  startsAt: string;
+  endsAt: string;
+};
+
+export type Product = { id: string; name: string; price: number; stock: number };
+
+export type PontoRow = {
+  id: string;
+  discordId: string;
+  openedAt: string;
+  closedAt: string | null;
+};
+
+export type FarmRow = {
+  id: string;
+  discordId: string;
+  amount: number;
+  status: string;
+  createdAt: string;
+};
+
+export type Billing = {
+  days: { day: string; total: number; count: number }[];
+  mechanics: { name: string; total: number; count: number }[];
+};
+
+export type Summary = {
+  workshop: Workshop & { guildId?: string | null };
+  today: { total: number; count: number };
+  month: { total: number; count: number };
+  staff: number;
+  blacklistActive: number;
+};
+
 export type Me = {
   id: string;
   username: string;

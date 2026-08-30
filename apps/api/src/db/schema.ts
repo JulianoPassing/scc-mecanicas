@@ -68,6 +68,115 @@ export const employees = pgTable("employees", {
     .references(() => workshops.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   discordId: text("discord_id").notNull(),
+  roleLabel: text("role_label"),
+  license: text("license"),
   status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const products = pgTable("products", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  price: integer("price").notNull().default(0),
+  stock: integer("stock").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const serviceOrders = pgTable("service_orders", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  mechanicName: text("mechanic_name").notNull(),
+  mechanicDiscordId: text("mechanic_discord_id"),
+  clientName: text("client_name").notNull(),
+  plate: text("plate").notNull(),
+  notes: text("notes"),
+  total: integer("total").notNull().default(0),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const serviceOrderItems = pgTable("service_order_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => serviceOrders.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  unitPrice: integer("unit_price").notNull().default(0),
+});
+
+export const hierarchyRoles = pgTable("hierarchy_roles", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  nicknamePrefix: text("nickname_prefix"),
+  discordRoleId: text("discord_role_id"),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const blacklists = pgTable("blacklists", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  employeeName: text("employee_name").notNull(),
+  discordId: text("discord_id"),
+  reason: text("reason").notNull(),
+  days: integer("days").notNull(),
+  startsAt: timestamp("starts_at", { withTimezone: true }).notNull().defaultNow(),
+  endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const timeClockSessions = pgTable("time_clock_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  employeeId: uuid("employee_id").references(() => employees.id),
+  discordId: text("discord_id").notNull(),
+  channelId: text("channel_id"),
+  openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+  closedVia: text("closed_via"),
+});
+
+export const farmEntries = pgTable("farm_entries", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workshopId: uuid("workshop_id")
+    .notNull()
+    .references(() => workshops.id, { onDelete: "cascade" }),
+  employeeId: uuid("employee_id").references(() => employees.id),
+  discordId: text("discord_id").notNull(),
+  amount: integer("amount").notNull(),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const botActions = pgTable("bot_actions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  type: text("type").notNull(),
+  guildId: text("guild_id").notNull(),
+  workshopId: uuid("workshop_id").references(() => workshops.id),
+  payload: text("payload"),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const botLogs = pgTable("bot_logs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  guildId: text("guild_id"),
+  workshopId: uuid("workshop_id").references(() => workshops.id),
+  discordId: text("discord_id"),
+  rawText: text("raw_text"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

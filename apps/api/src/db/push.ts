@@ -55,6 +55,101 @@ CREATE TABLE IF NOT EXISTS employees (
   status text NOT NULL DEFAULT 'active',
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS role_label text;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS license text;
+
+CREATE TABLE IF NOT EXISTS products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  price integer NOT NULL DEFAULT 0,
+  stock integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS service_orders (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  mechanic_name text NOT NULL,
+  mechanic_discord_id text,
+  client_name text NOT NULL,
+  plate text NOT NULL,
+  notes text,
+  total integer NOT NULL DEFAULT 0,
+  created_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS service_order_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id uuid NOT NULL REFERENCES service_orders(id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  name text NOT NULL,
+  quantity integer NOT NULL DEFAULT 1,
+  unit_price integer NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS hierarchy_roles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  label text NOT NULL,
+  nickname_prefix text,
+  discord_role_id text,
+  sort_order integer NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS blacklists (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  employee_name text NOT NULL,
+  discord_id text,
+  reason text NOT NULL,
+  days integer NOT NULL,
+  starts_at timestamptz NOT NULL DEFAULT now(),
+  ends_at timestamptz NOT NULL,
+  created_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS time_clock_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  employee_id uuid REFERENCES employees(id),
+  discord_id text NOT NULL,
+  channel_id text,
+  opened_at timestamptz NOT NULL DEFAULT now(),
+  closed_at timestamptz,
+  closed_via text
+);
+
+CREATE TABLE IF NOT EXISTS farm_entries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workshop_id uuid NOT NULL REFERENCES workshops(id) ON DELETE CASCADE,
+  employee_id uuid REFERENCES employees(id),
+  discord_id text NOT NULL,
+  amount integer NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bot_actions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  type text NOT NULL,
+  guild_id text NOT NULL,
+  workshop_id uuid REFERENCES workshops(id),
+  payload text,
+  status text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bot_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  guild_id text,
+  workshop_id uuid REFERENCES workshops(id),
+  discord_id text,
+  raw_text text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 `);
 
 console.log("schema ok");

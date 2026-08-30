@@ -8,20 +8,31 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, type AdminUser, type Workshop, type WorkshopAdmin } from "@/lib/api";
+import { brandOf } from "@/lib/brands";
 
 export function AdminPage() {
   const { me, loading, logout } = useAuth();
   const [tab, setTab] = useState<"users" | "workshops">("users");
 
-  if (loading) return <div className="p-8 text-muted-foreground">Carregando…</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+        <img src="/favicon.png" alt="" className="w-10 h-10 mr-3 rounded-xl logo-float" />
+        Carregando…
+      </div>
+    );
+  }
   if (!me) return <Navigate to="/" replace />;
   if (!me.approved && !me.isOwner) return <Navigate to="/pendente" replace />;
   if (!me.isAdmin && !me.isDonoMec) return <Navigate to="/" replace />;
 
   return (
     <div className="min-h-screen">
-      <header className="border-b px-4 py-3 flex items-center justify-between">
-        <h1 className="font-semibold">Painel admin</h1>
+      <header className="border-b px-4 py-3 flex items-center justify-between bg-card/40 backdrop-blur-xl sticky top-0 z-20">
+        <div className="flex items-center gap-2 font-semibold">
+          <img src="/favicon.png" alt="" className="w-8 h-8 rounded-lg" />
+          Painel admin
+        </div>
         <div className="flex gap-2">
           <Button asChild variant="outline" size="sm">
             <Link to="/">Início</Link>
@@ -31,7 +42,8 @@ export function AdminPage() {
           </Button>
         </div>
       </header>
-      <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
+      <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-4 anim-up">
+        <ShopLinks />
         <div className="flex gap-2">
           <Button variant={tab === "users" ? "default" : "outline"} size="sm" onClick={() => setTab("users")}>
             Cadastros
@@ -42,6 +54,32 @@ export function AdminPage() {
         </div>
         {tab === "users" ? <UsersTab /> : <WorkshopsTab />}
       </main>
+    </div>
+  );
+}
+
+function ShopLinks() {
+  const [shops, setShops] = useState<Workshop[]>([]);
+  useEffect(() => {
+    api<Workshop[]>("/workshops").then(setShops).catch(() => {});
+  }, []);
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {shops.map((w) => {
+        const b = brandOf(w.slug);
+        return (
+          <Link key={w.id} to={`/oficina/${w.slug}`}>
+            <Card
+              className="p-4 glass hover-lift text-center"
+              style={{ "--shop": w.primaryColor || b.color } as React.CSSProperties}
+            >
+              <img src={b.logo} alt={w.name} className="h-16 mx-auto object-contain" />
+              <div className="font-semibold mt-2">{w.name}</div>
+              <div className="text-[11px] text-muted-foreground">Abrir painel</div>
+            </Card>
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -196,8 +234,11 @@ function WorkshopsTab() {
         Guild e canais de cada Discord. Detalhe do que o bot faz em cada canal: veja DISCORD.md no repo.
       </p>
       {rows.map((w) => (
-        <Card key={w.id} className="p-5 space-y-3">
-          <h3 className="font-semibold text-lg">{w.name}</h3>
+        <Card key={w.id} className="p-5 space-y-3 glass shop-ring" style={{ "--shop": w.primaryColor } as React.CSSProperties}>
+          <div className="flex items-center gap-3">
+            <img src={brandOf(w.slug).logo} alt="" className="h-12 w-12 object-contain" />
+            <h3 className="font-semibold text-lg">{w.name}</h3>
+          </div>
           <div className="grid gap-3">
             {CHANNEL_FIELDS.map((f) => (
               <div key={f.key} className="space-y-1">

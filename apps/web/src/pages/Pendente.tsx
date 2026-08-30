@@ -7,8 +7,10 @@ import { Card } from "@/components/ui/card";
 export function PendentePage() {
   const { me, logout } = useAuth();
   return (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <Card className="max-w-md w-full p-6 space-y-4">
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-96 h-96 bg-primary/15 blur-3xl glow-orb pointer-events-none" />
+      <Card className="max-w-md w-full p-7 space-y-5 glass shop-ring relative z-10 anim-up">
+        <img src="/favicon.png" alt="SCC" className="w-12 h-12 rounded-xl" />
         <div className="flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-primary shrink-0 mt-0.5" />
           <div>

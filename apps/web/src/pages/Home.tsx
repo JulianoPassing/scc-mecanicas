@@ -1,18 +1,33 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowRight, LogIn, LogOut, Sparkles, Wrench } from "lucide-react";
+import { ArrowRight, LogIn, LogOut, Sparkles } from "lucide-react";
 import { useAuth } from "@/auth";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, setToken, type Me, type Workshop } from "@/lib/api";
+import { brandOf } from "@/lib/brands";
+
+const FALLBACK: Workshop[] = [
+  { id: "reds", slug: "reds", name: "Reds", primaryColor: "#dc2626" },
+  { id: "tuner", slug: "tuner", name: "Tuner", primaryColor: "#2563eb" },
+  { id: "power", slug: "power", name: "Power", primaryColor: "#ca8a04" },
+  { id: "motoclube", slug: "motoclube", name: "Motoclube", primaryColor: "#16a34a" },
+];
 
 export function HomePage() {
   const { me, loading, refresh, logout } = useAuth();
   const navigate = useNavigate();
   const [authOpen, setAuthOpen] = useState(false);
+  const [shops, setShops] = useState<Workshop[]>(FALLBACK);
+
+  useEffect(() => {
+    api<Workshop[]>("/workshops")
+      .then(setShops)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (loading || !me) return;
@@ -26,10 +41,12 @@ export function HomePage() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-black via-zinc-950 to-black" />
-      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-96 h-96 bg-primary/10 rounded-full blur-3xl" />
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute top-[-10%] left-1/2 -translate-x-1/2 w-[42rem] h-[42rem] rounded-full bg-primary/15 blur-3xl glow-orb" />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[28rem] h-[28rem] rounded-full bg-red-900/20 blur-3xl" />
+      </div>
 
-      <div className="absolute top-4 right-4 z-20">
+      <div className="absolute top-4 right-4 z-20 anim-in">
         {me ? (
           <Button variant="outline" size="sm" onClick={() => void logout()}>
             <LogOut className="w-4 h-4" /> Sair
@@ -41,37 +58,41 @@ export function HomePage() {
         )}
       </div>
 
-      <div className="max-w-3xl w-full mx-auto flex flex-col items-center gap-6 relative z-10">
-        <div className="text-center space-y-3">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary text-xs font-medium">
+      <div className="max-w-4xl w-full mx-auto flex flex-col items-center gap-8 relative z-10">
+        <div className="text-center space-y-4 anim-up">
+          <img src="/favicon.png" alt="SCC" className="w-16 h-16 mx-auto rounded-2xl shop-ring logo-float object-cover" />
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary/80 border border-border text-xs font-medium">
             <Sparkles className="w-3.5 h-3.5 text-primary" /> Sistema SCC
           </div>
-          <h1 className="text-3xl md:text-5xl font-bold tracking-tight">
+          <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight">
             SCC <span className="text-primary">Mecânicas</span>
           </h1>
           <p className="text-muted-foreground text-sm md:text-base max-w-lg mx-auto">
-            Cadastro no site. Um admin libera o acesso. Cada oficina tem a sua área.
+            Painel exclusivo de cada oficina. Cadastro no site, liberação pelo admin, operação completa.
           </p>
         </div>
 
-        {loading && (
-          <Card className="w-full p-4 text-center text-sm text-muted-foreground">Carregando…</Card>
-        )}
+        {loading && <Card className="w-full p-4 text-center text-sm text-muted-foreground glass">Carregando…</Card>}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full mt-2">
-          {(["Reds", "Tuner", "Power", "Motoclube"] as const).map((name) => (
-            <Card key={name} className="p-6 bg-card/80 backdrop-blur border-border">
-              <div className="w-12 h-12 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-3">
-                <Wrench className="w-6 h-6" />
-              </div>
-              <h2 className="text-xl font-bold">{name}</h2>
-              <p className="text-muted-foreground text-sm mt-1">Área da mecânica — entre após a liberação.</p>
-            </Card>
-          ))}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
+          {shops.map((w, i) => {
+            const b = brandOf(w.slug);
+            return (
+              <Card
+                key={w.id}
+                className={`p-5 glass hover-lift anim-up delay-${i + 1} text-center`}
+                style={{ "--shop": w.primaryColor || b.color } as React.CSSProperties}
+              >
+                <img src={b.logo} alt={w.name} className="h-20 md:h-24 mx-auto object-contain drop-shadow-lg" />
+                <h2 className="text-lg font-bold mt-3">{w.name}</h2>
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground mt-0.5">{b.tag}</p>
+              </Card>
+            );
+          })}
         </div>
 
         {!me && (
-          <Button className="mt-2 gap-2" onClick={() => setAuthOpen(true)}>
+          <Button className="mt-1 gap-2 anim-up delay-4 px-6" onClick={() => setAuthOpen(true)}>
             Entrar ou cadastrar <ArrowRight className="w-4 h-4" />
           </Button>
         )}
@@ -93,8 +114,8 @@ export function HomePage() {
 function AuthDialog({ onClose, onLogged }: { onClose: () => void; onLogged: () => Promise<void> }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
-      <Card className="w-full max-w-md p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 anim-in" onClick={onClose}>
+      <Card className="w-full max-w-md p-6 space-y-4 glass shop-ring" onClick={(e) => e.stopPropagation()}>
         <div>
           <h2 className="text-lg font-semibold">{mode === "signin" ? "Entrar" : "Criar conta"}</h2>
           <p className="text-sm text-muted-foreground mt-1">

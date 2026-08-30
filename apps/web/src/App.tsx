@@ -19,7 +19,14 @@ export function App() {
 
 function Gate({ children }: { children: React.ReactNode }) {
   const { me, loading } = useAuth();
-  if (loading) return <div className="p-8 text-muted-foreground">Carregando…</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-muted-foreground text-sm">
+        <img src="/favicon.png" alt="" className="w-10 h-10 mr-3 rounded-xl logo-float" />
+        Carregando…
+      </div>
+    );
+  }
   if (!me) return <Navigate to="/" replace />;
   return children;
 }
