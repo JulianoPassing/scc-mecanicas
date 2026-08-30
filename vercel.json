@@ -3,5 +3,8 @@
   "installCommand": "npm install",
   "buildCommand": "npm run build --workspace=@scc/web",
   "outputDirectory": "apps/web/dist",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    { "source": "/v1/:path*", "destination": "http://191.252.100.71:8787/:path*" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }
