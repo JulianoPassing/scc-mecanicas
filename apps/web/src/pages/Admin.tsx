@@ -69,7 +69,12 @@ export function AdminPage() {
           )}
         </div>
         {tab === "users" ? (
-          <UsersTab shopOnly={shopOnly} manageWorkshops={me.manageWorkshops} hideDono={shopOnly} />
+          <UsersTab
+            shopOnly={shopOnly}
+            manageWorkshops={me.manageWorkshops}
+            hideDono={shopOnly}
+            canResetPassword={me.isOwner}
+          />
         ) : (
           <WorkshopsTab />
         )}
@@ -134,10 +139,12 @@ function UsersTab({
   shopOnly,
   manageWorkshops,
   hideDono,
+  canResetPassword,
 }: {
   shopOnly: boolean;
   manageWorkshops: string[];
   hideDono: boolean;
+  canResetPassword: boolean;
 }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
@@ -187,11 +194,37 @@ function UsersTab({
     }
   }
 
+  async function resetPassword(u: AdminUser) {
+    const password = window.prompt(`Nova senha para ${u.username} (mínimo 8 caracteres)`);
+    if (password == null) return;
+    const trimmed = password.trim();
+    if (trimmed.length < 8 || trimmed.length > 72) {
+      toast.error("Senha deve ter entre 8 e 72 caracteres");
+      return;
+    }
+    const again = window.prompt("Confirme a nova senha");
+    if (again == null) return;
+    if (again.trim() !== trimmed) {
+      toast.error("As senhas não conferem");
+      return;
+    }
+    try {
+      await api(`/admin/users/${u.id}/password`, {
+        method: "POST",
+        body: JSON.stringify({ password: trimmed }),
+      });
+      toast.success(`Senha de ${u.username} atualizada`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
         Libere o cadastro escolhendo cargo e mecânica. Em quem já está liberado, mude os selects e clique em{" "}
         <strong>Salvar cargo</strong>.
+        {canResetPassword ? " Só o owner pode definir uma nova senha para a conta." : ""}
       </p>
       {users.map((u) => (
         <Card key={u.id} className="p-4 flex flex-col md:flex-row md:items-center gap-3 justify-between">
@@ -245,6 +278,11 @@ function UsersTab({
             ) : (
               <Button size="sm" onClick={() => void approve(u, true)}>
                 Liberar
+              </Button>
+            )}
+            {canResetPassword && (
+              <Button size="sm" variant="outline" onClick={() => void resetPassword(u)}>
+                Nova senha
               </Button>
             )}
           </div>

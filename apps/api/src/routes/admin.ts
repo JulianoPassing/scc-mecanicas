@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { employees, userRoles, users, workshops } from "../db/schema.js";
 import { actorName, audit } from "../audit.js";
+import { hashPassword } from "../auth.js";
 import { cargoFromSystemRole, systemRoleFromCargo, userIsWorkshopDono } from "../hierarchy.js";
 import { canApprove, loadMe } from "../me.js";
 import { currentUserId } from "./auth.js";
@@ -256,6 +257,30 @@ admin.post("/users/:id/access", async (c) => {
     }
   }
 
+  return c.json({ ok: true });
+});
+
+admin.post("/users/:id/password", async (c) => {
+  const me = meOf(c);
+  if (!me.isOwner) return c.json({ error: "Apenas o owner pode redefinir senha" }, 403);
+
+  const userId = c.req.param("id");
+  const parsed = z.object({ password: z.string().min(8).max(72) }).safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "Senha deve ter entre 8 e 72 caracteres" }, 400);
+
+  const [target] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!target) return c.json({ error: "Usuário não encontrado" }, 404);
+
+  await db.update(users).set({ passwordHash: await hashPassword(parsed.data.password) }).where(eq(users.id, userId));
+
+  await audit({
+    workshopId: target.requestedWorkshopId,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "user.password",
+    summary: `Redefiniu a senha de ${target.username}`,
+    payload: { userId: target.id },
+  });
   return c.json({ ok: true });
 });
 
