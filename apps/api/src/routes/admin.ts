@@ -284,6 +284,38 @@ admin.post("/users/:id/password", async (c) => {
   return c.json({ ok: true });
 });
 
+admin.delete("/users/:id", async (c) => {
+  const me = meOf(c);
+  if (!me.isOwner) return c.json({ error: "Apenas o owner pode excluir usuário" }, 403);
+
+  const userId = c.req.param("id");
+  if (userId === me.id) return c.json({ error: "Você não pode excluir a própria conta" }, 403);
+
+  const [target] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!target) return c.json({ error: "Usuário não encontrado" }, 404);
+  if (target.username === "owner" || target.discordId === "owner-seed") {
+    return c.json({ error: "Não dá para excluir o owner" }, 403);
+  }
+
+  const targetRoles = await db.select().from(userRoles).where(eq(userRoles.userId, userId));
+  if (targetRoles.some((r) => r.role === "owner")) {
+    return c.json({ error: "Não dá para excluir o owner" }, 403);
+  }
+
+  await db.update(employees).set({ userId: null, status: "inactive" }).where(eq(employees.userId, userId));
+  await db.delete(users).where(eq(users.id, userId));
+
+  await audit({
+    workshopId: target.requestedWorkshopId,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "user.delete",
+    summary: `Excluiu a conta ${target.username}`,
+    payload: { userId: target.id, discordId: target.discordId },
+  });
+  return c.json({ ok: true });
+});
+
 admin.get("/workshops", async (c) => {
   const me = meOf(c);
   if (!me.isAdmin && !me.isDonoMec && !me.isManager) return c.json({ error: "Acesso negado" }, 403);

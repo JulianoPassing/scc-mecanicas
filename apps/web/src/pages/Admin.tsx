@@ -73,7 +73,7 @@ export function AdminPage() {
             shopOnly={shopOnly}
             manageWorkshops={me.manageWorkshops}
             hideDono={shopOnly}
-            canResetPassword={me.isOwner}
+            ownerActions={me.isOwner}
           />
         ) : (
           <WorkshopsTab />
@@ -139,12 +139,12 @@ function UsersTab({
   shopOnly,
   manageWorkshops,
   hideDono,
-  canResetPassword,
+  ownerActions,
 }: {
   shopOnly: boolean;
   manageWorkshops: string[];
   hideDono: boolean;
-  canResetPassword: boolean;
+  ownerActions: boolean;
 }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
@@ -219,12 +219,29 @@ function UsersTab({
     }
   }
 
+  async function deleteUser(u: AdminUser) {
+    if (u.username === "owner" || u.discordId === "owner-seed" || u.roles.some((r) => r.role === "owner")) {
+      toast.error("Não dá para excluir o owner");
+      return;
+    }
+    if (!confirm(`Excluir a conta ${u.username}? Essa pessoa não vai mais conseguir entrar. O registro na equipe fica inativo.`)) {
+      return;
+    }
+    try {
+      await api(`/admin/users/${u.id}`, { method: "DELETE" });
+      toast.success(`${u.username} excluído`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha");
+    }
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
         Libere o cadastro escolhendo cargo e mecânica. Em quem já está liberado, mude os selects e clique em{" "}
         <strong>Salvar cargo</strong>.
-        {canResetPassword ? " Só o owner pode definir uma nova senha para a conta." : ""}
+        {ownerActions ? " Só o owner pode redefinir senha ou excluir a conta." : ""}
       </p>
       {users.map((u) => (
         <Card key={u.id} className="p-4 flex flex-col md:flex-row md:items-center gap-3 justify-between">
@@ -280,10 +297,17 @@ function UsersTab({
                 Liberar
               </Button>
             )}
-            {canResetPassword && (
-              <Button size="sm" variant="outline" onClick={() => void resetPassword(u)}>
-                Nova senha
-              </Button>
+            {ownerActions && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => void resetPassword(u)}>
+                  Nova senha
+                </Button>
+                {!(u.username === "owner" || u.discordId === "owner-seed" || u.roles.some((r) => r.role === "owner")) && (
+                  <Button size="sm" variant="outline" className="text-red-400 border-red-500/40" onClick={() => void deleteUser(u)}>
+                    Excluir
+                  </Button>
+                )}
+              </>
             )}
           </div>
         </Card>
