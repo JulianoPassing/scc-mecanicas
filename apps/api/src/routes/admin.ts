@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { employees, userRoles, users, workshops } from "../db/schema.js";
+import { employees, userRoles, users, workshops, botActions } from "../db/schema.js";
 import { actorName, audit } from "../audit.js";
 import { hashPassword } from "../auth.js";
 import { cargoFromSystemRole, systemRoleFromCargo, userIsWorkshopDono } from "../hierarchy.js";
@@ -324,6 +324,39 @@ admin.get("/workshops", async (c) => {
     rows = rows.filter((w) => me.manageWorkshops.includes(w.id));
   }
   return c.json(rows);
+});
+
+admin.post("/publish-panels", async (c) => {
+  const me = meOf(c);
+  let rows = await db.select().from(workshops);
+  if (!me.isAdmin) rows = rows.filter((w) => me.manageWorkshops.includes(w.id));
+  const queued: string[] = [];
+  for (const w of rows) {
+    if (!w.guildId) continue;
+    await db.insert(botActions).values({
+      type: "publish_panels",
+      guildId: w.guildId,
+      workshopId: w.id,
+      payload: JSON.stringify({
+        name: w.name,
+        primary_color: w.primaryColor,
+        ponto_channel_id: w.pontoChannelId,
+        farm_channel_id: w.farmChannelId,
+        log_channel_id: w.logChannelId,
+      }),
+    });
+    queued.push(w.name);
+  }
+  if (!queued.length) return c.json({ error: "Nenhuma mecânica com Guild ID" }, 400);
+  await audit({
+    workshopId: null,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "discord.publish_panels",
+    summary: `Enfileirou painéis Discord: ${queued.join(", ")}`,
+    payload: { workshops: queued },
+  });
+  return c.json({ ok: true, queued });
 });
 
 admin.patch("/workshops/:id", async (c) => {

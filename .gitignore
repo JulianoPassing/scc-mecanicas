@@ -5,6 +5,7 @@ bot/.env
 bot/.venv
 bot/log_forwarder_config.json
 apps/api/dist
+apps/api/data
 apps/web/dist
 
 # Logs

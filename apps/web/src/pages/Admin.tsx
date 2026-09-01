@@ -381,6 +381,15 @@ function WorkshopsTab() {
       <p className="text-sm text-muted-foreground">
         Guild e canais de cada Discord. Detalhe do que o bot faz em cada canal: veja DISCORD.md no repo.
       </p>
+      <Button
+        onClick={() =>
+          api<{ queued: string[] }>("/admin/publish-panels", { method: "POST" })
+            .then((r) => toast.success(`Painéis enfileirados: ${r.queued.join(", ")}. O bot publica em até ~30s.`))
+            .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"))
+        }
+      >
+        Publicar ponto e farm em todos os canais
+      </Button>
       {rows.map((w) => (
         <Card key={w.id} className="p-5 space-y-3 glass shop-ring" style={{ "--shop": w.primaryColor } as React.CSSProperties}>
           <div className="flex items-center gap-3">

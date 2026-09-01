@@ -40,6 +40,7 @@ BOT_ACTIONS_URL = f"{SITE_URL}/api/public/bot/actions"
 BOT_FARM_URL          = f"{SITE_URL}/api/public/bot/farm"
 BOT_FARM_UPLOAD_URL   = f"{SITE_URL}/api/public/bot/farm-upload"
 BOT_WORKSHOP_GUILD_URL = f"{SITE_URL}/api/public/bot/workshop-by-guild"
+BOT_WORKSHOPS_URL = f"{SITE_URL}/api/public/bot/workshops"
 BOT_NICKS_URL = f"{SITE_URL}/api/public/bot/nicks"
 
 
@@ -576,6 +577,68 @@ class Ponto(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(
+        name="publicar-paineis",
+        description="Publica ponto + farm em todos os canais já configurados no Admin (de uma vez).",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def publish_panels_cmd(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ Use em um servidor.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        session = self.session or aiohttp.ClientSession()
+        close_after = self.session is None
+        workshops: list[dict] = []
+        try:
+            try:
+                async with session.get(
+                    BOT_WORKSHOPS_URL,
+                    headers={"X-Bot-Secret": _resolve_bot_secret()},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    data = await r.json(content_type=None) if r.status == 200 else {}
+                    workshops = list((data or {}).get("workshops") or [])
+            except Exception as e:
+                _log_exc("publicar-paineis fetch", e)
+                await interaction.followup.send("❌ Não consegui ler as mecânicas na API.", ephemeral=True)
+                return
+        finally:
+            if close_after:
+                await session.close()
+
+        if not workshops:
+            await interaction.followup.send(
+                "❌ Nenhuma mecânica com Guild ID no Admin.",
+                ephemeral=True,
+            )
+            return
+
+        lines: list[str] = []
+        posted = 0
+        for ws in workshops:
+            gid = str(ws.get("guild_id") or "")
+            guild = self.bot.get_guild(int(gid)) if gid.isdigit() else None
+            if guild is None:
+                lines.append(f"• **{ws.get('name')}** — bot não está nesse servidor")
+                continue
+            member = guild.get_member(interaction.user.id)
+            if member is None or not member.guild_permissions.administrator:
+                lines.append(f"• **{ws.get('name')}** — você não é admin nesse Discord")
+                continue
+            try:
+                notes = await publish_workshop_panels(self.bot, {**ws, "guild_id": gid})
+                posted += 1
+                lines.append(f"• **{ws.get('name')}** — {', '.join(notes)}")
+            except Exception as e:
+                _log_exc("publicar-paineis post", e)
+                lines.append(f"• **{ws.get('name')}** — falha `{_short(e, 80)}`")
+
+        await interaction.followup.send(
+            f"**Painéis:** {posted} mecânica(s)\n" + "\n".join(lines[:20]),
+            ephemeral=True,
+        )
+
 
 
 
@@ -603,6 +666,86 @@ except Exception:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
         except Exception as e:
             _log_exc("save_config", e)
+
+
+def _embed_color(hexv: object) -> int:
+    try:
+        s = str(hexv or "").lstrip("#")
+        if s:
+            return int(s, 16)
+    except Exception:
+        pass
+    return EMBED_COLOR
+
+
+async def _fetch_text_channel(bot: commands.Bot, channel_id: object) -> Optional[discord.TextChannel]:
+    raw = str(channel_id or "").strip()
+    if not raw:
+        return None
+    try:
+        cid = int(raw)
+    except Exception:
+        return None
+    ch = bot.get_channel(cid)
+    if ch is None:
+        try:
+            ch = await bot.fetch_channel(cid)
+        except Exception as e:
+            _log_exc(f"fetch_channel {cid}", e)
+            return None
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+async def publish_workshop_panels(bot: commands.Bot, ws: dict) -> list[str]:
+    notes: list[str] = []
+    name = str(ws.get("name") or "Mecânica")
+    color = _embed_color(ws.get("primary_color"))
+    ponto_ch = await _fetch_text_channel(bot, ws.get("ponto_channel_id"))
+    farm_ch = await _fetch_text_channel(bot, ws.get("farm_channel_id"))
+    if ponto_ch:
+        emb = discord.Embed(
+            title=f"⏱️ Ponto — {name}",
+            description=(
+                "Clique em **🟢 Bater ponto** para iniciar seu expediente.\n"
+                "Clique em **🔴 Fechar ponto** para encerrar.\n\n"
+                "Cada batida é registrada **neste canal** com início, fim e total de horas."
+            ),
+            color=color,
+        )
+        emb.set_footer(text="Mecânico SCC")
+        await ponto_ch.send(embed=emb, view=PontoView())
+        notes.append(f"ponto → #{ponto_ch.name}")
+    else:
+        notes.append("ponto: canal ausente")
+    if farm_ch:
+        emb = discord.Embed(
+            title=f"🌾 Pagamento de Farm — {name}",
+            description=(
+                "Clique em **Pagar farm** para registrar sua entrega.\n\n"
+                "1️⃣ Informe a **quantidade** entregue.\n"
+                "2️⃣ Envie o **print** neste canal (imagem anexada).\n"
+                "3️⃣ O bot apaga o print para manter o canal limpo e envia ao painel para aprovação."
+            ),
+            color=color,
+        )
+        emb.set_footer(text="Mecânico SCC")
+        await farm_ch.send(embed=emb, view=FarmPayView())
+        notes.append(f"farm → #{farm_ch.name}")
+    else:
+        notes.append("farm: canal ausente")
+    gid = str(ws.get("guild_id") or "")
+    log_id = str(ws.get("log_channel_id") or "").strip()
+    if gid and log_id:
+        try:
+            cog = bot.get_cog("LogForwarderCog")
+            if cog and hasattr(cog, "guild_configs"):
+                cog.guild_configs.setdefault(gid, {})["log_channel_id"] = int(log_id)
+                save_config(cog.guild_configs)
+                notes.append("logs ligados")
+        except Exception as e:
+            _log_exc("publish log channel", e)
+            notes.append("logs: falha")
+    return notes
 
 
 class LogForwarderCog(commands.Cog):
@@ -976,6 +1119,17 @@ class LogForwarderCog(commands.Cog):
                             processed += 1
                         else:
                             acks.append({"id": act_id, "status": "failed", "error": _short(err, 200), "result": result})
+                            failed += 1
+                    elif act_type == "publish_panels":
+                        payload = dict(act.get("payload") or {})
+                        payload.setdefault("guild_id", gid)
+                        try:
+                            notes = await publish_workshop_panels(self.bot, payload)
+                            acks.append({"id": act_id, "status": "sent", "result": {"notes": notes}})
+                            processed += 1
+                        except Exception as e:
+                            _log_exc("publish_panels action", e)
+                            acks.append({"id": act_id, "status": "failed", "error": _short(e, 200)})
                             failed += 1
                     else:
                         acks.append({"id": act_id, "status": "sent"})

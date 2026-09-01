@@ -854,6 +854,7 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
   const [discordId, setDiscordId] = useState("");
   const [roleLabel, setRoleLabel] = useState("Mecânico");
   const [syncing, setSyncing] = useState(false);
+  const [bl, setBl] = useState<{ emp: Employee; reason: string; days: number } | null>(null);
 
   async function load() {
     setRows(await api<Employee[]>(`/workshop/${slug}/employees`));
@@ -888,15 +889,28 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
 
   async function remove(emp: Employee, withBl: boolean) {
     try {
-      let body = {};
       if (withBl) {
-        const reason = prompt("Motivo da blacklist") ?? "";
-        const days = Number(prompt("Dias de bloqueio", "30"));
-        if (!reason || !days) return;
-        body = { blacklist: { reason, days } };
+        setBl({ emp, reason: "", days: 30 });
+        return;
       }
-      await api(`/workshop/${slug}/employees/${emp.id}`, { method: "DELETE", body: JSON.stringify(body) });
-      toast.success(withBl ? "Removido e na blacklist" : "Removido");
+      await api(`/workshop/${slug}/employees/${emp.id}`, { method: "DELETE", body: JSON.stringify({}) });
+      toast.success("Removido");
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha");
+    }
+  }
+
+  async function confirmBlacklist() {
+    if (!bl) return;
+    if (!bl.reason.trim() || bl.days < 1) return toast.error("Informe motivo e dias");
+    try {
+      await api(`/workshop/${slug}/employees/${bl.emp.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ blacklist: { reason: bl.reason.trim(), days: bl.days } }),
+      });
+      toast.success("Removido e na blacklist");
+      setBl(null);
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha");
@@ -1038,6 +1052,23 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
         ));
       })()}
       {rows.length === 0 && <p className="text-sm text-muted-foreground">Ninguém liberado nesta mecânica ainda.</p>}
+      {bl && (
+        <Modal onClose={() => setBl(null)}>
+          <h3 className="text-lg font-bold">Blacklist · {bl.emp.discordNick || bl.emp.name}</h3>
+          <Label>Motivo</Label>
+          <Input value={bl.reason} onChange={(e) => setBl({ ...bl, reason: e.target.value })} />
+          <Label>Dias</Label>
+          <Input type="number" min={1} value={bl.days} onChange={(e) => setBl({ ...bl, days: Number(e.target.value) })} />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" type="button" onClick={() => setBl(null)}>
+              Cancelar
+            </Button>
+            <Button type="button" onClick={() => void confirmBlacklist()}>
+              Remover e bloquear
+            </Button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1672,6 +1703,12 @@ function Ponto({ slug, manage }: { slug: string; manage: boolean }) {
 function Farm({ slug, manage }: { slug: string; manage: boolean }) {
   const [data, setData] = useState<FarmWeek | null>(null);
   const [goal, setGoal] = useState(300);
+  const [amount, setAmount] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [sending, setSending] = useState(false);
+  const [rejectId, setRejectId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
   async function load() {
     const d = await api<FarmWeek>(`/workshop/${slug}/farm`);
     setData(d);
@@ -1681,18 +1718,37 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
     load().catch((e) => toast.error(e.message));
   }, [slug]);
 
-  async function decide(id: string, status: "approved" | "rejected") {
-    let reason: string | undefined;
-    if (status === "rejected") {
-      reason = prompt("Motivo da rejeição") ?? "";
-      if (!reason.trim()) return toast.error("Informe o motivo");
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file) return toast.error("Anexe o print");
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n <= 0) return toast.error("Quantidade inválida");
+    setSending(true);
+    try {
+      const fd = new FormData();
+      fd.set("amount", String(Math.floor(n)));
+      fd.set("file", file);
+      await api(`/workshop/${slug}/farm`, { method: "POST", body: fd });
+      toast.success("Farm enviado. Aguarde confirmação.");
+      setAmount("");
+      setFile(null);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha");
+    } finally {
+      setSending(false);
     }
+  }
+
+  async function decide(id: string, status: "approved" | "rejected", reason?: string) {
     try {
       await api(`/workshop/${slug}/farm/${id}`, { method: "PATCH", body: JSON.stringify({ status, reason }) });
       toast.success(status === "approved" ? "Confirmado" : "Rejeitado");
+      setRejectId(null);
+      setRejectReason("");
       await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Falha");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha");
     }
   }
 
@@ -1746,20 +1802,68 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
           <div className="text-2xl font-extrabold">{data?.pending ?? 0}</div>
         </Card>
       </div>
-      <p className="text-sm text-muted-foreground">
-        O funcionário registra no Discord. Dono/gerente confirma ou rejeita. Só o confirmado entra na soma e no relatório.
-      </p>
+      <Card className="p-4 glass">
+        <h3 className="font-semibold mb-3">Registrar entrega</h3>
+        <form onSubmit={(e) => void submit(e)} className="grid md:grid-cols-[1fr_1fr_auto] gap-2 items-end">
+          <div>
+            <Label>Quantidade</Label>
+            <Input type="number" min={1} value={amount} onChange={(e) => setAmount(e.target.value)} required />
+          </div>
+          <div>
+            <Label>Print</Label>
+            <Input
+              type="file"
+              accept="image/*"
+              key={file ? file.name + file.size : "empty"}
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              required
+            />
+          </div>
+          <Button disabled={sending}>{sending ? "Enviando…" : "Enviar farm"}</Button>
+        </form>
+        <p className="text-xs text-muted-foreground mt-2">
+          Também dá para pagar no Discord (botão Pagar farm + print no canal). O print fica salvo aqui para conferência.
+        </p>
+      </Card>
+      {!!data?.byEmployee?.length && (
+        <Card className="p-4 glass">
+          <h3 className="font-semibold mb-2">Semana</h3>
+          <div className="space-y-1 text-sm">
+            {data.byEmployee.map((e) => (
+              <div key={e.discordId} className="flex justify-between gap-2">
+                <span>
+                  {e.name} {e.total >= (data.goal ?? 0) ? "✓" : ""}
+                </span>
+                <span className="tabular-nums">
+                  {e.total} / {data.goal}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       {data?.entries.map((r) => (
         <Card key={r.id} className="p-4 glass flex flex-wrap justify-between gap-3 text-sm">
-          <div>
-            <div className="font-medium">
-              {r.employeeName || r.discordId} · <strong>{r.amount}</strong>
-            </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {when(r.createdAt)} ·{" "}
-              {r.status === "approved" ? "CONFIRMADO" : r.status === "rejected" ? "REJEITADO" : "pendente"}
-              {r.reviewerName ? ` · ${r.reviewerName}` : ""}
-              {r.rejectReason ? ` · ${r.rejectReason}` : ""}
+          <div className="flex gap-3 min-w-0">
+            {r.proofUrl ? (
+              <button type="button" className="shrink-0" onClick={() => setPreview(r.proofUrl!)}>
+                <img src={r.proofUrl} alt="" className="w-16 h-16 object-cover rounded-md border border-border" />
+              </button>
+            ) : (
+              <div className="w-16 h-16 rounded-md border border-dashed border-border grid place-items-center text-[10px] text-muted-foreground">
+                sem print
+              </div>
+            )}
+            <div>
+              <div className="font-medium">
+                {r.employeeName || r.discordId} · <strong>{r.amount}</strong>
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {when(r.createdAt)} ·{" "}
+                {r.status === "approved" ? "CONFIRMADO" : r.status === "rejected" ? "REJEITADO" : "pendente"}
+                {r.reviewerName ? ` · ${r.reviewerName}` : ""}
+                {r.rejectReason ? ` · ${r.rejectReason}` : ""}
+              </div>
             </div>
           </div>
           {manage && r.status === "pending" && (
@@ -1767,13 +1871,46 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
               <Button size="sm" onClick={() => void decide(r.id, "approved")}>
                 Confirmar
               </Button>
-              <Button size="sm" variant="outline" onClick={() => void decide(r.id, "rejected")}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setRejectId(r.id);
+                  setRejectReason("");
+                }}
+              >
                 Rejeitar
               </Button>
             </div>
           )}
         </Card>
       ))}
+      {rejectId && (
+        <Modal onClose={() => setRejectId(null)}>
+          <h3 className="text-lg font-bold">Rejeitar farm</h3>
+          <Label>Motivo</Label>
+          <Input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" type="button" onClick={() => setRejectId(null)}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                if (!rejectReason.trim()) return toast.error("Informe o motivo");
+                void decide(rejectId, "rejected", rejectReason.trim());
+              }}
+            >
+              Rejeitar
+            </Button>
+          </div>
+        </Modal>
+      )}
+      {preview && (
+        <Modal onClose={() => setPreview(null)} className="max-w-4xl">
+          <img src={preview} alt="Print do farm" className="w-full rounded-md" />
+        </Modal>
+      )}
     </div>
   );
 }

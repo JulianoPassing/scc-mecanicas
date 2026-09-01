@@ -11,7 +11,13 @@ function stamp(ws?: WorkshopLike) {
 
 export function sendWebhook(
   url: string | null | undefined,
-  embed: { title: string; description?: string; fields?: { name: string; value: string; inline?: boolean }[]; color?: number },
+  embed: {
+    title: string;
+    description?: string;
+    fields?: { name: string; value: string; inline?: boolean }[];
+    color?: number;
+    image?: { url: string };
+  },
   ws?: WorkshopLike,
 ) {
   if (!url || !url.startsWith("https://")) return;

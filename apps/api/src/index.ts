@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -8,6 +10,7 @@ import { admin } from "./routes/admin.js";
 import { workshopsRoute } from "./routes/workshops.js";
 import { workshopApi } from "./routes/workshop.js";
 import { botPublic } from "./routes/bot.js";
+import { farmProofDir, mimeForProof } from "./uploads.js";
 
 const app = new Hono();
 
@@ -22,6 +25,18 @@ app.use(
 );
 
 app.get("/health", (c) => c.json({ ok: true }));
+app.get("/uploads/farm/:file", async (c) => {
+  const file = c.req.param("file");
+  if (!/^[0-9a-f-]{36}\.(png|jpe?g|webp|gif)$/i.test(file)) return c.json({ error: "Not found" }, 404);
+  try {
+    const buf = await readFile(join(farmProofDir(), file));
+    return new Response(buf, {
+      headers: { "Content-Type": mimeForProof(file), "Cache-Control": "public, max-age=86400" },
+    });
+  } catch {
+    return c.json({ error: "Not found" }, 404);
+  }
+});
 app.route("/auth", auth);
 app.route("/workshops", workshopsRoute);
 app.route("/admin", admin);

@@ -12,7 +12,9 @@ export function setToken(token: string | null) {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && init.body && !(init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`${BASE}${path}`, { ...init, headers, credentials: "include" });
@@ -103,6 +105,7 @@ export type FarmRow = {
   id: string;
   discordId: string;
   amount: number;
+  proofUrl?: string | null;
   status: string;
   reviewerName?: string | null;
   rejectReason?: string | null;

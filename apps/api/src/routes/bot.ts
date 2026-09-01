@@ -6,6 +6,7 @@ import { env } from "../env.js";
 import { db } from "../db/index.js";
 import { botActions, botLogs, employees, farmEntries, timeClockSessions, workshops } from "../db/schema.js";
 import { sendWebhook } from "../discord.js";
+import { fileFromBody, saveFarmProof } from "../uploads.js";
 
 export const botPublic = new Hono();
 
@@ -34,7 +35,35 @@ botPublic.get("/bot/workshop-by-guild", async (c) => {
   if (!guildId) return c.json({ error: "guild_id ausente" }, 400);
   const [ws] = await db.select().from(workshops).where(eq(workshops.guildId, guildId)).limit(1);
   if (!ws) return c.json({ error: "Mecânica não encontrada" }, 404);
-  return c.json({ id: ws.id, name: ws.name, primary_color: ws.primaryColor, farm_weekly_goal: ws.farmWeeklyGoal });
+  return c.json({
+    id: ws.id,
+    name: ws.name,
+    primary_color: ws.primaryColor,
+    farm_weekly_goal: ws.farmWeeklyGoal,
+    ponto_channel_id: ws.pontoChannelId,
+    farm_channel_id: ws.farmChannelId,
+    log_channel_id: ws.logChannelId,
+    guild_id: ws.guildId,
+  });
+});
+
+botPublic.get("/bot/workshops", async (c) => {
+  const auth = authorize(c);
+  if (!auth.ok) return c.json({ error: auth.error }, auth.status);
+  const rows = await db.select().from(workshops);
+  return c.json({
+    workshops: rows
+      .filter((w) => w.guildId)
+      .map((w) => ({
+        id: w.id,
+        name: w.name,
+        primary_color: w.primaryColor,
+        guild_id: w.guildId,
+        ponto_channel_id: w.pontoChannelId,
+        farm_channel_id: w.farmChannelId,
+        log_channel_id: w.logChannelId,
+      })),
+  });
 });
 
 botPublic.get("/bot/actions", async (c) => {
@@ -173,13 +202,14 @@ botPublic.post("/bot/logs", async (c) => {
   return c.json({ inserted });
 });
 
-async function recordFarm(input: { guildId: string; discordId: string; amount: number }) {
+async function recordFarm(input: { guildId: string; discordId: string; amount: number; proofUrl?: string | null }) {
   const [ws] = await db.select().from(workshops).where(eq(workshops.guildId, input.guildId)).limit(1);
   if (!ws) return { error: "Mecânica não encontrada para esse guild_id", status: 404 as const };
+  const discordId = input.discordId.replace(/\D/g, "") || input.discordId;
   const [emp] = await db
     .select()
     .from(employees)
-    .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, input.discordId)))
+    .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, discordId)))
     .limit(1);
   if (!emp) return { error: "Funcionário não encontrado nessa mecânica", status: 404 as const };
   const [row] = await db
@@ -187,12 +217,26 @@ async function recordFarm(input: { guildId: string; discordId: string; amount: n
     .values({
       workshopId: ws.id,
       employeeId: emp.id,
-      discordId: input.discordId,
+      discordId,
       amount: input.amount,
+      proofUrl: input.proofUrl ?? null,
       status: "pending",
     })
     .returning();
-  return { ok: true as const, employee: emp.name, amount: input.amount, id: row.id };
+  sendWebhook(
+    ws.farmWebhookUrl,
+    {
+      title: "🌾 Farm pendente",
+      color: 0xf59e0b,
+      fields: [
+        { name: "👤 Funcionário", value: `<@${discordId}> — ${emp.name}` },
+        { name: "📊 Quantidade", value: String(input.amount), inline: true },
+      ],
+      ...(input.proofUrl ? { image: { url: input.proofUrl } } : {}),
+    },
+    ws,
+  );
+  return { ok: true as const, employee: emp.name, amount: input.amount, id: row.id, proof_url: row.proofUrl };
 }
 
 botPublic.post("/bot/farm", async (c) => {
@@ -218,14 +262,22 @@ botPublic.post("/bot/farm", async (c) => {
 botPublic.post("/bot/farm-upload", async (c) => {
   const auth = authorize(c);
   if (!auth.ok) return c.json({ error: auth.error }, auth.status);
-  const body = await c.req.parseBody();
+  const body = await c.req.parseBody({ all: true });
   const guildId = String(body.guild_id ?? "").trim();
   const discordId = String(body.discord_id ?? "").trim();
   const amount = Number(body.amount);
   if (!guildId || !discordId || !Number.isFinite(amount) || amount <= 0) {
     return c.json({ error: "Payload inválido" }, 400);
   }
-  const result = await recordFarm({ guildId, discordId, amount: Math.floor(amount) });
+  const parsedFile = await fileFromBody(body.file);
+  if (!parsedFile) return c.json({ error: "Print obrigatório" }, 400);
+  let proofUrl: string;
+  try {
+    proofUrl = (await saveFarmProof(parsedFile)).url;
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "Falha ao salvar print" }, 400);
+  }
+  const result = await recordFarm({ guildId, discordId, amount: Math.floor(amount), proofUrl });
   if ("error" in result) return c.json({ error: result.error }, result.status);
   return c.json(result);
 });

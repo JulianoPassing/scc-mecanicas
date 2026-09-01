@@ -28,6 +28,7 @@ import {
 import { canAccessWorkshop, canManageWorkshop, requireMe } from "../access.js";
 import { actorName, audit } from "../audit.js";
 import { moneyBr, sendWebhook } from "../discord.js";
+import { fileFromBody, saveFarmProof } from "../uploads.js";
 
 export const workshopApi = new Hono();
 
@@ -1114,6 +1115,7 @@ async function farmWeek(ws: typeof workshops.$inferSelect) {
       id: farmEntries.id,
       discordId: farmEntries.discordId,
       amount: farmEntries.amount,
+      proofUrl: farmEntries.proofUrl,
       status: farmEntries.status,
       reviewerName: farmEntries.reviewerName,
       rejectReason: farmEntries.rejectReason,
@@ -1167,6 +1169,72 @@ workshopApi.get("/:slug/farm", async (c) => {
   if ("error" in g && g.error) return g.error.json();
   const { ws } = g as { ws: typeof workshops.$inferSelect };
   return c.json(await farmWeek(ws));
+});
+
+workshopApi.post("/:slug/farm", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  const body = await c.req.parseBody({ all: true });
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
+    return c.json({ error: "Quantidade inválida" }, 400);
+  }
+  const parsedFile = await fileFromBody(body.file);
+  if (!parsedFile) return c.json({ error: "Anexe o print da entrega" }, 400);
+  let proofUrl: string;
+  try {
+    proofUrl = (await saveFarmProof(parsedFile)).url;
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "Falha ao salvar print" }, 400);
+  }
+  const discordId = (me.discordId ?? "").replace(/\D/g, "");
+  const [emp] = await db
+    .select()
+    .from(employees)
+    .where(
+      and(
+        eq(employees.workshopId, ws.id),
+        eq(employees.status, "active"),
+        or(eq(employees.userId, me.id), discordId ? eq(employees.discordId, discordId) : sql`false`),
+      ),
+    )
+    .limit(1);
+  if (!emp) return c.json({ error: "Seu usuário não está na equipe desta mecânica" }, 403);
+  const [row] = await db
+    .insert(farmEntries)
+    .values({
+      workshopId: ws.id,
+      employeeId: emp.id,
+      discordId: emp.discordId,
+      amount: Math.floor(amount),
+      proofUrl,
+      status: "pending",
+    })
+    .returning();
+  sendWebhook(
+    ws.farmWebhookUrl,
+    {
+      title: "🌾 Farm pendente",
+      color: 0xf59e0b,
+      fields: [
+        { name: "👤 Funcionário", value: `<@${emp.discordId}> — ${emp.name}` },
+        { name: "📊 Quantidade", value: String(row.amount), inline: true },
+        { name: "🌐 Origem", value: "Site", inline: true },
+      ],
+      image: { url: proofUrl },
+    },
+    ws,
+  );
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "farm.submit",
+    summary: `Registrou farm de ${row.amount} com print`,
+    payload: { entryId: row.id },
+  });
+  return c.json({ ok: true, id: row.id });
 });
 
 workshopApi.patch("/:slug/farm/goal", async (c) => {
@@ -1258,6 +1326,7 @@ workshopApi.patch("/:slug/farm/:id", async (c) => {
           { name: "🛠️ Confirmado por", value: actorName(me), inline: true },
           { name: "📊 Quantidade", value: String(row.amount), inline: true },
         ],
+        ...(row.proofUrl ? { image: { url: row.proofUrl } } : {}),
       },
       ws,
     );

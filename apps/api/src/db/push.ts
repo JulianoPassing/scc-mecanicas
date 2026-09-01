@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS farm_entries (
 ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS reviewer_name text;
 ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS reject_reason text;
 ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE farm_entries ADD COLUMN IF NOT EXISTS proof_url text;
 
 CREATE TABLE IF NOT EXISTS bot_actions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

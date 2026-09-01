@@ -184,6 +184,7 @@ export const farmEntries = pgTable("farm_entries", {
   employeeId: uuid("employee_id").references(() => employees.id),
   discordId: text("discord_id").notNull(),
   amount: integer("amount").notNull(),
+  proofUrl: text("proof_url"),
   status: text("status").notNull().default("pending"),
   reviewerName: text("reviewer_name"),
   rejectReason: text("reject_reason"),

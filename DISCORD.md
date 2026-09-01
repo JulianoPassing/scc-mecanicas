@@ -22,7 +22,7 @@ Novas oficinas: criar no admin e colar o Guild ID. Sem misturar canais entre ser
 |---|---|---|
 | **Ponto** (bater / fechar) | Canal da embed `/ponto setup` | `workshops.ponto_channel_id` — o ID desse canal. O site resolve a mecânica pelo canal. |
 | **Aviso de ponto aberto** | Mesmo canal do ponto | Webhook `ponto_webhook_url` e/ou ação `ponto_warn` (bot menciona o funcionário). |
-| **Farm** (pagar + print) | Canal da embed `/farm-painel` | Qualquer canal do **Guild** da mecânica (`workshops.guild_id`). Print some depois do envio. |
+| **Farm** (pagar + print) | Canal da embed `/farm-painel` | Qualquer canal do **Guild** da mecânica (`workshops.guild_id`). Print some do canal e fica salvo no site. |
 | **Logs do baú** (jogo → painel) | Canal definido com `/set_log_channel` | Salvo no arquivo do bot `bot/log_forwarder_config.json` (por guild), **não** no site. |
 | **Hierarquia** (nick + cargos) | Servidor inteiro da mecânica | `guild_id` + cargos Discord nos prefixos. Fila `bot_actions` tipo `hierarchy_update`. |
 | **Kick** | Servidor da mecânica | Ação `discord_kick` quando alguém é removido/blacklist. |
@@ -38,6 +38,7 @@ Uma mecânica = **um servidor Discord** (`guild_id` único).
 | `/ponto status` | — | Orienta a olhar o painel. |
 | `/ponto forcar_fechar` | — | Fecha o próprio ponto. |
 | `/farm-painel` | Admin | Posta botão Pagar farm. |
+| `/publicar-paineis` | Admin do Discord | Posta ponto + farm em **todos** os canais já preenchidos no Admin, nos servidores em que você for admin. |
 | `/set_log_channel` | Admin | Define o canal de logs daquele guild. |
 | `/atcargos` | — | Aplica agora as ações de hierarquia pendentes. |
 
