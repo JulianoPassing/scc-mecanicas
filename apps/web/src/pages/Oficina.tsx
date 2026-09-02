@@ -1924,13 +1924,11 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
         <Card key={r.id} className="p-4 glass flex flex-wrap justify-between gap-3 text-sm">
           <div className="flex gap-3 min-w-0">
             {r.proofUrl ? (
-              <button type="button" className="shrink-0" onClick={() => setPreview(r.proofUrl!)}>
-                <img src={r.proofUrl} alt="" className="w-16 h-16 object-cover rounded-md border border-border" />
-              </button>
+              <Button type="button" size="sm" variant="outline" className="shrink-0" onClick={() => setPreview(r.proofUrl!)}>
+                Ver imagem
+              </Button>
             ) : (
-              <div className="w-16 h-16 rounded-md border border-dashed border-border grid place-items-center text-[10px] text-muted-foreground">
-                sem print
-              </div>
+              <span className="text-xs text-muted-foreground shrink-0">sem print</span>
             )}
             <div>
               <div className="font-medium">
@@ -1986,7 +1984,15 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
       )}
       {preview && (
         <Modal onClose={() => setPreview(null)} className="max-w-4xl">
-          <img src={preview} alt="Print do farm" className="w-full rounded-md" />
+          <h3 className="text-lg font-bold">Print do farm</h3>
+          <img src={preview} alt="Print do farm" referrerPolicy="no-referrer" className="w-full rounded-md bg-black/40" />
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" size="sm" asChild>
+              <a href={preview} target="_blank" rel="noreferrer">
+                Abrir em nova aba
+              </a>
+            </Button>
+          </div>
         </Modal>
       )}
     </div>
