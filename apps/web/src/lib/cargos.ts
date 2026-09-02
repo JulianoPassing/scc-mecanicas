@@ -21,6 +21,23 @@ export function isDonoCargo(label?: string | null) {
   return n === "proprietario" || n === "dono" || n === "dono da mecanica" || n === "dono_mec";
 }
 
+export function cargoFromSystemRole(role?: string | null) {
+  if (role === "dono_mec") return "Proprietario";
+  if (role === "manager_mec") return "Gerente";
+  return "Mecânico";
+}
+
+export function cargoFromUserRoles(
+  roles: { role: string; workshopId: string | null }[] | undefined,
+  workshopId?: string,
+) {
+  const list = roles ?? [];
+  const shop = workshopId ? list.filter((r) => !r.workshopId || r.workshopId === workshopId) : list;
+  if (shop.some((r) => r.role === "dono_mec")) return "Proprietario";
+  if (shop.some((r) => r.role === "manager_mec")) return "Gerente";
+  return cargoFromSystemRole(shop.find((r) => r.role === "mechanic")?.role);
+}
+
 export function isGerenteCargo(label?: string | null) {
   const n = normCargo(label);
   return n === "gerente" || n === "manager" || n === "manager_mec";

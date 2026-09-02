@@ -37,6 +37,14 @@ function extFrom(name: string, contentType: string) {
   return ".png";
 }
 
+function extFromMagic(bytes: Buffer, name: string, contentType: string) {
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return ".png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return ".jpg";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return ".gif";
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45) return ".webp";
+  return extFrom(name, contentType);
+}
+
 export async function saveFarmProof(input: {
   bytes: Buffer;
   filename?: string;
@@ -47,8 +55,23 @@ export async function saveFarmProof(input: {
   }
   const type = (input.contentType || "").toLowerCase();
   if (type && !type.startsWith("image/")) throw new Error("Envie uma imagem");
+  const ext = extFromMagic(input.bytes, input.filename || "", type);
+  const allowed = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+  if (!allowed.includes(ext)) throw new Error("Envie uma imagem (png, jpg, webp ou gif)");
+  const sigOk =
+    ext === ".png" ||
+    ext === ".jpg" ||
+    ext === ".jpeg" ||
+    ext === ".gif" ||
+    ext === ".webp";
+  const looksLikeImage =
+    (input.bytes[0] === 0x89 && input.bytes[1] === 0x50) ||
+    (input.bytes[0] === 0xff && input.bytes[1] === 0xd8) ||
+    (input.bytes[0] === 0x47 && input.bytes[1] === 0x49) ||
+    (input.bytes[0] === 0x52 && input.bytes[1] === 0x49);
+  if (!looksLikeImage || !sigOk) throw new Error("Arquivo não é uma imagem válida");
   await mkdir(dir, { recursive: true });
-  const filename = `${randomUUID()}${extFrom(input.filename || "", type)}`;
+  const filename = `${randomUUID()}${ext === ".jpeg" ? ".jpg" : ext}`;
   await writeFile(join(dir, filename), input.bytes);
   return { filename, url: proofPublicUrl(filename) };
 }

@@ -20,6 +20,24 @@ export const auth = new Hono();
 
 const userRe = /^[a-zA-Z0-9_]{3,32}$/;
 const discordRe = /^\d{5,32}$/;
+const loginHits = new Map<string, { n: number; t: number }>();
+
+function clientIp(c: { req: { header: (n: string) => string | undefined } }) {
+  const xf = c.req.header("x-forwarded-for") ?? "";
+  return xf.split(",")[0]?.trim() || c.req.header("x-real-ip") || "unknown";
+}
+
+function allowAttempt(key: string, max: number, windowMs: number) {
+  const now = Date.now();
+  const row = loginHits.get(key);
+  if (!row || now - row.t > windowMs) {
+    loginHits.set(key, { n: 1, t: now });
+    return true;
+  }
+  if (row.n >= max) return false;
+  row.n += 1;
+  return true;
+}
 
 function bearer(c: { req: { header: (n: string) => string | undefined } }) {
   const h = c.req.header("authorization") ?? "";
@@ -38,6 +56,9 @@ export async function currentUserId(c: Parameters<typeof bearer>[0]) {
 }
 
 auth.post("/register", async (c) => {
+  if (!allowAttempt(`reg:${clientIp(c)}`, 8, 15 * 60_000)) {
+    return c.json({ error: "Muitas tentativas. Aguarde alguns minutos." }, 429);
+  }
   const parsed = z
     .object({
       username: z.string().trim().regex(userRe, "Usuário inválido"),
@@ -101,6 +122,9 @@ auth.post("/register", async (c) => {
 });
 
 auth.post("/login", async (c) => {
+  if (!allowAttempt(`login:${clientIp(c)}`, 12, 10 * 60_000)) {
+    return c.json({ error: "Muitas tentativas. Aguarde alguns minutos." }, 429);
+  }
   const parsed = z
     .object({
       username: z.string().trim().regex(userRe),

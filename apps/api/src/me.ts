@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import { db } from "./db/index.js";
 import { employees, userRoles, users, workshops } from "./db/schema.js";
+import { isDonoCargo, isGerenteCargo } from "./hierarchy.js";
 
 export type Role = "owner" | "admin" | "dono_mec" | "manager_mec" | "mechanic";
 
@@ -11,11 +12,14 @@ export async function loadMe(userId: string) {
   const roles = await db.select().from(userRoles).where(eq(userRoles.userId, user.id));
   const isOwner = roles.some((r) => r.role === "owner");
   const isAdmin = isOwner || roles.some((r) => r.role === "admin");
-  const donoWorkshops = roles.filter((r) => r.role === "dono_mec").map((r) => r.workshopId).filter(Boolean) as string[];
-  const managerWorkshops = roles.filter((r) => r.role === "manager_mec").map((r) => r.workshopId).filter(Boolean) as string[];
-  const isDonoMec = donoWorkshops.length > 0;
-  const isManager = managerWorkshops.length > 0;
-  const manageWorkshops = [...new Set([...donoWorkshops, ...managerWorkshops])];
+  const donoWorkshops = roles
+    .filter((r) => r.role === "dono_mec")
+    .map((r) => r.workshopId || user.requestedWorkshopId)
+    .filter(Boolean) as string[];
+  const managerWorkshops = roles
+    .filter((r) => r.role === "manager_mec")
+    .map((r) => r.workshopId || user.requestedWorkshopId)
+    .filter(Boolean) as string[];
 
   const empRows = await db
     .select({
@@ -25,10 +29,23 @@ export async function loadMe(userId: string) {
       workshopSlug: workshops.slug,
       workshopName: workshops.name,
       status: employees.status,
+      roleLabel: employees.roleLabel,
     })
     .from(employees)
     .innerJoin(workshops, eq(employees.workshopId, workshops.id))
-    .where(eq(employees.userId, user.id));
+    .where(or(eq(employees.userId, user.id), eq(employees.discordId, user.discordId)));
+
+  const donoFromTeam = empRows
+    .filter((e) => e.status === "active" && isDonoCargo(e.roleLabel))
+    .map((e) => e.workshopId);
+  const gerFromTeam = empRows
+    .filter((e) => e.status === "active" && isGerenteCargo(e.roleLabel))
+    .map((e) => e.workshopId);
+  const donoWorkshopsAll = [...new Set([...donoWorkshops, ...donoFromTeam])];
+  const managerWorkshopsAll = [...new Set([...managerWorkshops, ...gerFromTeam])];
+  const isDonoMec = donoWorkshopsAll.length > 0;
+  const isManager = managerWorkshopsAll.length > 0;
+  const manageWorkshops = [...new Set([...donoWorkshopsAll, ...managerWorkshopsAll])];
 
   const workshopIds = new Set<string>();
   if (isAdmin) {
@@ -50,8 +67,8 @@ export async function loadMe(userId: string) {
     isAdmin,
     isDonoMec,
     isManager,
-    donoWorkshops,
-    managerWorkshops,
+    donoWorkshops: donoWorkshopsAll,
+    managerWorkshops: managerWorkshopsAll,
     manageWorkshops,
     roles: roles.map((r) => ({ role: r.role as Role, workshopId: r.workshopId })),
     employee: empRows[0] ?? null,

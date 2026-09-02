@@ -172,12 +172,12 @@ function SignInForm({ onDone }: { onDone: () => Promise<void> }) {
   return (
     <form onSubmit={submit} className="space-y-3">
       <div className="space-y-1.5">
-        <Label>Usuário</Label>
-        <Input value={username} onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ""))} required />
+        <Label htmlFor="login-user">Usuário</Label>
+        <Input id="login-user" value={username} onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ""))} required />
       </div>
       <div className="space-y-1.5">
-        <Label>Senha</Label>
-        <Input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
+        <Label htmlFor="login-pass">Senha</Label>
+        <Input id="login-pass" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
       </div>
       <Button className="w-full" disabled={loading}>
         {loading ? "Entrando…" : "Entrar"}
@@ -221,8 +221,9 @@ function SignUpForm({ onDone }: { onDone: () => void }) {
   return (
     <form onSubmit={submit} className="space-y-3">
       <div className="space-y-1.5">
-        <Label>Mecânica</Label>
+        <Label htmlFor="su-shop">Mecânica</Label>
         <select
+          id="su-shop"
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
           value={workshopId}
           onChange={(e) => setWorkshopId(e.target.value)}
@@ -237,16 +238,16 @@ function SignUpForm({ onDone }: { onDone: () => void }) {
         </select>
       </div>
       <div className="space-y-1.5">
-        <Label>Usuário</Label>
-        <Input value={username} onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ""))} required />
+        <Label htmlFor="su-user">Usuário</Label>
+        <Input id="su-user" value={username} onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ""))} required />
       </div>
       <div className="space-y-1.5">
-        <Label>Discord ID</Label>
-        <Input value={discordId} onChange={(e) => setDiscordId(e.target.value.replace(/\D/g, ""))} required />
+        <Label htmlFor="su-discord">Discord ID</Label>
+        <Input id="su-discord" value={discordId} onChange={(e) => setDiscordId(e.target.value.replace(/\D/g, ""))} required />
       </div>
       <div className="space-y-1.5">
-        <Label>Senha</Label>
-        <Input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
+        <Label htmlFor="su-pass">Senha</Label>
+        <Input id="su-pass" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
       </div>
       <Button className="w-full" disabled={loading}>
         {loading ? "Enviando…" : "Cadastrar"}

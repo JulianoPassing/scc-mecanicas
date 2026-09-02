@@ -31,7 +31,11 @@ app.get("/uploads/farm/:file", async (c) => {
   try {
     const buf = await readFile(join(farmProofDir(), file));
     return new Response(buf, {
-      headers: { "Content-Type": mimeForProof(file), "Cache-Control": "public, max-age=86400" },
+      headers: {
+        "Content-Type": mimeForProof(file),
+        "Cache-Control": "public, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+      },
     });
   } catch {
     return c.json({ error: "Not found" }, 404);

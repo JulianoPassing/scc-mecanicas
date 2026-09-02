@@ -46,7 +46,7 @@ import {
   type Summary,
 } from "@/lib/api";
 import { brandOf, daysLeft, money, when } from "@/lib/brands";
-import { DEFAULT_CARGOS, groupTeamByCargo, isDonoCargo, isGerenteCargo } from "@/lib/cargos";
+import { cargoFromUserRoles, DEFAULT_CARGOS, groupTeamByCargo, isDonoCargo, isGerenteCargo } from "@/lib/cargos";
 
 function Splash() {
   return (
@@ -90,13 +90,17 @@ const TABS: { id: Tab; label: string; icon: typeof Wrench }[] = [
 
 export function OficinaPage() {
   const { slug } = useParams();
-  const { me, loading, logout } = useAuth();
+  const { me, loading, logout, refresh } = useAuth();
   const [tab, setTab] = useState<Tab>("resumo");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [denied, setDenied] = useState(false);
   const warnedPending = useRef(false);
 
   const brand = brandOf(slug);
+
+  useEffect(() => {
+    void refresh();
+  }, [slug]);
 
   useEffect(() => {
     if (!slug || !me) return;
@@ -820,7 +824,7 @@ function Cadastros({
           <div className="flex flex-wrap gap-2">
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-              value={roles[u.id] ?? "Mecânico"}
+              value={roles[u.id] ?? cargoFromUserRoles(u.roles, workshopId)}
               onChange={(e) => setRoles((s) => ({ ...s, [u.id]: e.target.value }))}
             >
               {DEFAULT_CARGOS.filter((c) => canEditDono || !isDonoCargo(c.label)).map((c) => (

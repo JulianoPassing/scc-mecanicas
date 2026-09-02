@@ -236,10 +236,16 @@ admin.post("/users/:id/access", async (c) => {
         await db.update(employees).set({ status: "inactive" }).where(eq(employees.id, emp.id));
       }
     }
+    const did = (target.discordId ?? "").replace(/\D/g, "") || target.discordId;
     const [emp] = await db
       .select()
       .from(employees)
-      .where(and(eq(employees.workshopId, workshopId), eq(employees.discordId, target.discordId)))
+      .where(
+        and(
+          eq(employees.workshopId, workshopId),
+          or(eq(employees.userId, target.id), eq(employees.discordId, did), eq(employees.discordId, target.discordId)),
+        ),
+      )
       .limit(1);
     const roleLabel =
       parsed.data.role === "dono_mec" ? "Proprietario" : parsed.data.role === "manager_mec" ? "Gerente" : "Mecânico";
