@@ -26,6 +26,7 @@ export function sendWebhook(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       username: ws ? `Relatório · ${ws.name}` : "SCC Mecânicas",
+      allowed_mentions: { parse: [] },
       embeds: [
         {
           color: embed.color ?? (ws ? colorOf(ws) : 0xdc2626),

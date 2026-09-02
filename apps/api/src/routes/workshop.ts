@@ -20,6 +20,7 @@ import {
 } from "../db/schema.js";
 import {
   employeeIsWorkshopDono,
+  formatHierarchyEmbed,
   isDonoCargo,
   listWorkshopTeam,
   seedHierarchy,
@@ -698,14 +699,11 @@ workshopApi.post("/:slug/hierarchy/push", async (c) => {
   });
   sendWebhook(
     ws.hierarchyWebhookUrl,
-    {
-      title: `Hierarquia — ${ws.name}`,
-      description: "Hierarquia enviada ao Discord (nicks e cargos).",
-      fields: [
-        { name: "Cargos", value: roles.map((r) => r.label).join(", ") || "—" },
-        { name: "Funcionários", value: String(emps.length), inline: true },
-      ],
-    },
+    formatHierarchyEmbed({
+      workshopName: ws.name,
+      roles,
+      employees: emps,
+    }),
     ws,
   );
   return c.json({ ok: true });

@@ -36,6 +36,56 @@ export function cargoRank(label?: string | null) {
   return idx === -1 ? DEFAULT_HIERARCHY.length : idx;
 }
 
+function cargoEmoji(label?: string | null) {
+  const n = normCargo(label);
+  if (n.includes("propriet") || n === "dono" || n.includes("dono da")) return "👑";
+  if (n.includes("gerente")) return "🛡️";
+  if (n.includes("supervisor")) return "📌";
+  if (n.includes("preparador")) return "⚙️";
+  if (n.includes("auxiliar")) return "🔧";
+  if (n.includes("mecan")) return "🔧";
+  if (n.includes("aprendiz")) return "🧰";
+  return "▪️";
+}
+
+function mentionOf(discordId?: string | null) {
+  const id = digitsId(discordId);
+  return id ? `<@${id}>` : "—";
+}
+
+export function formatHierarchyEmbed(input: {
+  workshopName: string;
+  roles: { label: string; sortOrder?: number | null }[];
+  employees: { name: string; discordNick?: string | null; discordId: string; roleLabel?: string | null }[];
+}) {
+  const roleOrder = [...input.roles].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  const used = new Set<string>();
+  const blocks: string[] = [];
+  for (const role of roleOrder) {
+    const members = input.employees.filter((e) => normCargo(e.roleLabel) === normCargo(role.label));
+    if (!members.length) continue;
+    used.add(normCargo(role.label));
+    const lines = members
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+      .map((e) => `• ${e.discordNick || e.name} — ${mentionOf(e.discordId)}`);
+    blocks.push(`**${cargoEmoji(role.label)} ${role.label} — ${members.length}**\n${lines.join("\n")}`);
+  }
+  const leftover = input.employees.filter((e) => !used.has(normCargo(e.roleLabel)));
+  if (leftover.length) {
+    const lines = leftover
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+      .map((e) => `• ${e.discordNick || e.name} — ${mentionOf(e.discordId)}`);
+    blocks.push(`**▪️ Sem cargo — ${leftover.length}**\n${lines.join("\n")}`);
+  }
+  let description = `Total de funcionários ativos: **${input.employees.length}**`;
+  if (blocks.length) description += `\n\n${blocks.join("\n\n")}`;
+  if (description.length > 4000) description = `${description.slice(0, 3990)}…`;
+  return {
+    title: `📋 Hierarquia — ${input.workshopName}`,
+    description,
+  };
+}
+
 export function sortTeam<T extends { roleLabel?: string | null; name: string }>(rows: T[]) {
   return [...rows].sort((a, b) => cargoRank(a.roleLabel) - cargoRank(b.roleLabel) || a.name.localeCompare(b.name, "pt-BR"));
 }
