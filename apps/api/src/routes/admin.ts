@@ -286,8 +286,6 @@ admin.post("/users/:id/password", async (c) => {
 
 admin.delete("/users/:id", async (c) => {
   const me = meOf(c);
-  if (!me.isOwner) return c.json({ error: "Apenas o owner pode excluir usuário" }, 403);
-
   const userId = c.req.param("id");
   if (userId === me.id) return c.json({ error: "Você não pode excluir a própria conta" }, 403);
 
@@ -300,6 +298,17 @@ admin.delete("/users/:id", async (c) => {
   const targetRoles = await db.select().from(userRoles).where(eq(userRoles.userId, userId));
   if (targetRoles.some((r) => r.role === "owner")) {
     return c.json({ error: "Não dá para excluir o owner" }, 403);
+  }
+  const shopIds = [
+    ...targetRoles.map((r) => r.workshopId).filter(Boolean),
+    target.requestedWorkshopId,
+  ] as string[];
+  const donoCan = shopIds.some((id) => me.donoWorkshops.includes(id));
+  if (!me.isOwner && !me.isAdmin && !donoCan) {
+    return c.json({ error: "Só o dono desta mecânica pode excluir este usuário" }, 403);
+  }
+  if (!me.isOwner && !me.isAdmin && targetRoles.some((r) => r.role === "admin")) {
+    return c.json({ error: "Não dá para excluir um admin" }, 403);
   }
 
   await db.update(employees).set({ userId: null, status: "inactive" }).where(eq(employees.userId, userId));

@@ -840,6 +840,24 @@ function Cadastros({
                 Liberar
               </Button>
             )}
+            {canEditDono && !u.roles.some((r) => r.role === "owner") && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-red-400 border-red-500/40"
+                onClick={() => {
+                  if (!confirm(`Excluir a conta ${u.username}?`)) return;
+                  api(`/admin/users/${u.id}`, { method: "DELETE" })
+                    .then(() => {
+                      toast.success("Usuário excluído");
+                      void load();
+                    })
+                    .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"));
+                }}
+              >
+                Excluir
+              </Button>
+            )}
           </div>
         </Card>
       ))}
@@ -855,6 +873,7 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
   const [roleLabel, setRoleLabel] = useState("Mecânico");
   const [syncing, setSyncing] = useState(false);
   const [bl, setBl] = useState<{ emp: Employee; reason: string; days: number } | null>(null);
+  const [drop, setDrop] = useState<Employee | null>(null);
 
   async function load() {
     setRows(await api<Employee[]>(`/workshop/${slug}/employees`));
@@ -894,7 +913,22 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
         return;
       }
       await api(`/workshop/${slug}/employees/${emp.id}`, { method: "DELETE", body: JSON.stringify({}) });
-      toast.success("Removido");
+      toast.success("Removido da equipe");
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha");
+    }
+  }
+
+  async function confirmDeleteUser() {
+    if (!drop) return;
+    try {
+      const r = await api<{ deletedUser?: boolean }>(`/workshop/${slug}/employees/${drop.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ deleteUser: true }),
+      });
+      toast.success(r.deletedUser ? "Usuário excluído do site e da equipe" : "Removido da equipe e acesso revogado");
+      setDrop(null);
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Falha");
@@ -909,7 +943,7 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
         method: "DELETE",
         body: JSON.stringify({ blacklist: { reason: bl.reason.trim(), days: bl.days } }),
       });
-      toast.success("Removido e na blacklist");
+      toast.success("Blacklist + removido da equipe. Kick no Discord enfileirado.");
       setBl(null);
       await load();
     } catch (err) {
@@ -1040,6 +1074,11 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
                       <Button size="sm" variant="outline" onClick={() => void remove(e, false)}>
                         Remover
                       </Button>
+                      {canEditDono && (
+                        <Button size="sm" variant="outline" className="text-red-400 border-red-500/40" onClick={() => setDrop(e)}>
+                          Excluir usuário
+                        </Button>
+                      )}
                       <Button size="sm" variant="outline" onClick={() => void remove(e, true)}>
                         Blacklist
                       </Button>
@@ -1052,6 +1091,22 @@ function Equipe({ slug, manage, canEditDono }: { slug: string; manage: boolean; 
         ));
       })()}
       {rows.length === 0 && <p className="text-sm text-muted-foreground">Ninguém liberado nesta mecânica ainda.</p>}
+      {drop && (
+        <Modal onClose={() => setDrop(null)}>
+          <h3 className="text-lg font-bold">Excluir usuário · {drop.discordNick || drop.name}</h3>
+          <p className="text-sm text-muted-foreground">
+            Tira da equipe e apaga o login do site se a conta só existir nesta mecânica. Não expulsa do Discord (use Blacklist para isso).
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" type="button" onClick={() => setDrop(null)}>
+              Cancelar
+            </Button>
+            <Button type="button" onClick={() => void confirmDeleteUser()}>
+              Excluir
+            </Button>
+          </div>
+        </Modal>
+      )}
       {bl && (
         <Modal onClose={() => setBl(null)}>
           <h3 className="text-lg font-bold">Blacklist · {bl.emp.discordNick || bl.emp.name}</h3>
@@ -1205,7 +1260,7 @@ function BlacklistTab({ slug, manage }: { slug: string; manage: boolean }) {
     e.preventDefault();
     try {
       await api(`/workshop/${slug}/blacklist`, { method: "POST", body: JSON.stringify({ employeeName, discordId, reason, days }) });
-      toast.success("Incluído na blacklist");
+      toast.success("BL registrada. Se tiver Discord ID, remove da equipe e expulsa do servidor.");
       setEmployeeName("");
       setDiscordId("");
       setReason("");
@@ -1218,6 +1273,9 @@ function BlacklistTab({ slug, manage }: { slug: string; manage: boolean }) {
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-bold">Blacklist</h2>
+      <p className="text-sm text-muted-foreground">
+        Registrar BL tira da equipe, revoga o login desta oficina (apaga a conta se só existir aqui) e pede ao bot para expulsar do Discord.
+      </p>
       {manage && (
         <Card className="p-4 glass">
           <form onSubmit={add} className="grid md:grid-cols-2 gap-2">

@@ -14,6 +14,7 @@ import {
   serviceOrderItems,
   serviceOrders,
   timeClockSessions,
+  userRoles,
   users,
   whitelists,
   workshops,
@@ -32,6 +33,140 @@ import { moneyBr, sendWebhook } from "../discord.js";
 import { fileFromBody, saveFarmProof } from "../uploads.js";
 
 export const workshopApi = new Hono();
+
+async function resolveEmployeeUserId(emp: { userId: string | null; discordId?: string | null }) {
+  if (emp.userId) return emp.userId;
+  const did = (emp.discordId ?? "").replace(/\D/g, "");
+  if (!did) return null;
+  const [u] = await db.select({ id: users.id }).from(users).where(eq(users.discordId, did)).limit(1);
+  return u?.id ?? null;
+}
+
+async function revokeSiteUserFromWorkshop(userId: string | null, workshopId: string) {
+  if (!userId) return { deletedUser: false };
+  const roles = await db.select().from(userRoles).where(eq(userRoles.userId, userId));
+  const privileged = roles.some((r) => r.role === "owner" || r.role === "admin");
+  await db.delete(userRoles).where(and(eq(userRoles.userId, userId), eq(userRoles.workshopId, workshopId)));
+  if (privileged) return { deletedUser: false };
+  const left = await db.select().from(userRoles).where(eq(userRoles.userId, userId));
+  const stillInShops = left.some((r) => r.workshopId && r.workshopId !== workshopId);
+  const stillGlobal = left.some((r) => r.role === "owner" || r.role === "admin");
+  if (!stillInShops && !stillGlobal) {
+    await db.delete(users).where(eq(users.id, userId));
+    return { deletedUser: true };
+  }
+  return { deletedUser: false };
+}
+
+async function removeEmployeeRow(emp: typeof employees.$inferSelect) {
+  await db.update(timeClockSessions).set({ employeeId: null }).where(eq(timeClockSessions.employeeId, emp.id));
+  await db.update(farmEntries).set({ employeeId: null }).where(eq(farmEntries.employeeId, emp.id));
+  await db.delete(employees).where(eq(employees.id, emp.id));
+}
+
+async function applyBlacklistBan(input: {
+  me: NonNullable<Awaited<ReturnType<typeof requireMe>>>;
+  ws: typeof workshops.$inferSelect;
+  name: string;
+  discordId: string | null;
+  reason: string;
+  days: number;
+  employee?: typeof employees.$inferSelect | null;
+}) {
+  const discordId = (input.discordId ?? "").replace(/\D/g, "") || null;
+  const starts = new Date();
+  const ends = new Date(starts.getTime() + input.days * 86400000);
+
+  let emp = input.employee ?? null;
+  if (!emp && discordId) {
+    const [found] = await db
+      .select()
+      .from(employees)
+      .where(and(eq(employees.workshopId, input.ws.id), eq(employees.discordId, discordId)))
+      .limit(1);
+    emp = found ?? null;
+  }
+
+  if (discordId) {
+    await db.delete(whitelists).where(and(eq(whitelists.workshopId, input.ws.id), eq(whitelists.discordId, discordId)));
+  }
+
+  const [row] = await db
+    .insert(blacklists)
+    .values({
+      workshopId: input.ws.id,
+      employeeName: emp?.name || input.name,
+      discordId: discordId || emp?.discordId || null,
+      reason: input.reason,
+      days: input.days,
+      startsAt: starts,
+      endsAt: ends,
+      createdBy: input.me.id,
+    })
+    .returning();
+
+  let kickedQueued = false;
+  const kickId = (discordId || emp?.discordId || "").replace(/\D/g, "");
+  if (input.ws.guildId && kickId) {
+    await db.insert(botActions).values({
+      type: "discord_kick",
+      guildId: input.ws.guildId,
+      workshopId: input.ws.id,
+      payload: JSON.stringify({
+        discord_id: kickId,
+        reason: `Blacklist (${input.days}d): ${input.reason}`.slice(0, 400),
+      }),
+    });
+    kickedQueued = true;
+  }
+
+  let deletedUser = false;
+  let removedStaff = false;
+  if (emp) {
+    const revoked = await revokeSiteUserFromWorkshop(await resolveEmployeeUserId(emp), input.ws.id);
+    deletedUser = revoked.deletedUser;
+    await removeEmployeeRow(emp);
+    removedStaff = true;
+  }
+
+  const mention = kickId ? `<@${kickId}>` : "—";
+  sendWebhook(
+    input.ws.blacklistWebhookUrl,
+    {
+      title: `🚫 Blacklist e expulsão — ${input.ws.name}`,
+      description: `**${row.employeeName}** ${mention} entrou na blacklist e foi expulso.`,
+      fields: [
+        { name: "Motivo", value: input.reason.slice(0, 500) },
+        { name: "Dias", value: String(input.days), inline: true },
+        { name: "Discord", value: kickId || "—", inline: true },
+        { name: "Equipe", value: removedStaff ? "Removido" : "Não estava na equipe", inline: true },
+        { name: "Discord kick", value: kickedQueued ? "Enfileirado" : "Sem ID/guild", inline: true },
+        { name: "Login no site", value: deletedUser ? "Conta excluída" : emp?.userId ? "Acesso da oficina revogado" : "Sem cadastro", inline: true },
+      ],
+    },
+    input.ws,
+  );
+  if (removedStaff) {
+    sendWebhook(
+      input.ws.staffEventsWebhookUrl,
+      {
+        title: `Equipe — ${input.ws.name}`,
+        description: `**${row.employeeName}** saiu da equipe (blacklist + expulsão).`,
+        fields: [{ name: "Discord", value: kickId || "—", inline: true }],
+      },
+      input.ws,
+    );
+  }
+  await audit({
+    workshopId: input.ws.id,
+    actorId: input.me.id,
+    actorName: actorName(input.me),
+    action: "blacklist.ban",
+    summary: `BL + expulsão de ${row.employeeName} (${input.days}d)${kickedQueued ? " · kick Discord" : ""}${deletedUser ? " · conta excluída" : ""}`,
+    payload: { blacklistId: row.id, discordId: kickId, employeeId: emp?.id, deletedUser, kickedQueued },
+  });
+  return { row, kickedQueued, removedStaff, deletedUser };
+}
 
 async function gate(c: { req: { param: (n: string) => string }; json: Function }) {
   const me = await requireMe(c as never);
@@ -528,6 +663,7 @@ workshopApi.delete("/:slug/employees/:id", async (c) => {
   if (!canManageWorkshop(me, ws.id)) return c.json({ error: "Sem permissão" }, 403);
   const parsed = z
     .object({
+      deleteUser: z.boolean().optional(),
       blacklist: z
         .object({ reason: z.string().trim().min(1).max(500), days: z.number().int().min(1).max(3650) })
         .optional(),
@@ -542,40 +678,21 @@ workshopApi.delete("/:slug/employees/:id", async (c) => {
   if (!me.isAdmin && !me.donoWorkshops.includes(ws.id) && (await employeeIsWorkshopDono(emp, ws.id))) {
     return c.json({ error: "Gerente não pode excluir o proprietário" }, 403);
   }
+  const wantDeleteUser = parsed.success && parsed.data.deleteUser;
+  if (wantDeleteUser && !me.isAdmin && !me.donoWorkshops.includes(ws.id)) {
+    return c.json({ error: "Só o dono da mecânica pode excluir o usuário do site" }, 403);
+  }
   if (parsed.success && parsed.data.blacklist) {
-    const starts = new Date();
-    const ends = new Date(starts.getTime() + parsed.data.blacklist.days * 86400000);
-    await db.insert(blacklists).values({
-      workshopId: ws.id,
-      employeeName: emp.name,
+    const result = await applyBlacklistBan({
+      me,
+      ws,
+      name: emp.name,
       discordId: emp.discordId,
       reason: parsed.data.blacklist.reason,
       days: parsed.data.blacklist.days,
-      startsAt: starts,
-      endsAt: ends,
-      createdBy: me.id,
+      employee: emp,
     });
-    if (ws.guildId && emp.discordId) {
-      await db.insert(botActions).values({
-        type: "discord_kick",
-        guildId: ws.guildId,
-        workshopId: ws.id,
-        payload: JSON.stringify({ discord_id: emp.discordId, reason: parsed.data.blacklist.reason }),
-      });
-    }
-    sendWebhook(
-      ws.blacklistWebhookUrl,
-      {
-        title: `Blacklist — ${ws.name}`,
-        description: `**${emp.name}** foi para a blacklist.`,
-        fields: [
-          { name: "Motivo", value: parsed.data.blacklist.reason.slice(0, 500) },
-          { name: "Dias", value: String(parsed.data.blacklist.days), inline: true },
-          { name: "Discord", value: emp.discordId || "—", inline: true },
-        ],
-      },
-      ws,
-    );
+    return c.json({ ok: true, ...result, blacklist: result.row });
   }
   sendWebhook(
     ws.staffEventsWebhookUrl,
@@ -586,16 +703,23 @@ workshopApi.delete("/:slug/employees/:id", async (c) => {
     },
     ws,
   );
-  await db.delete(employees).where(eq(employees.id, emp.id));
+  const linkedUserId = await resolveEmployeeUserId(emp);
+  if (wantDeleteUser && linkedUserId && linkedUserId === me.id) {
+    return c.json({ error: "Você não pode excluir a própria conta por aqui" }, 403);
+  }
+  const revoked = await revokeSiteUserFromWorkshop(linkedUserId, ws.id);
+  await removeEmployeeRow(emp);
   await audit({
     workshopId: ws.id,
     actorId: me.id,
     actorName: actorName(me),
-    action: "employee.delete",
-    summary: `Removeu ${emp.name} da equipe${parsed.success && parsed.data.blacklist ? " + blacklist" : ""}`,
-    payload: { employee: emp, blacklist: parsed.success ? parsed.data.blacklist : undefined },
+    action: wantDeleteUser ? "employee.delete_user" : "employee.delete",
+    summary: wantDeleteUser
+      ? `Excluiu ${emp.name} da equipe${revoked.deletedUser ? " e apagou o login" : " e revogou o acesso"}`
+      : `Removeu ${emp.name} da equipe`,
+    payload: { employee: emp, deletedUser: revoked.deletedUser },
   });
-  return c.json({ ok: true });
+  return c.json({ ok: true, deletedUser: revoked.deletedUser });
 });
 
 workshopApi.get("/:slug/hierarchy", async (c) => {
@@ -735,50 +859,29 @@ workshopApi.post("/:slug/blacklist", async (c) => {
     })
     .safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "Dados inválidos" }, 400);
-  if (parsed.data.discordId && !me.isAdmin && !me.donoWorkshops.includes(ws.id)) {
-    const [target] = await db
+  const discordId = (parsed.data.discordId ?? "").replace(/\D/g, "") || null;
+  let emp: typeof employees.$inferSelect | null = null;
+  if (discordId) {
+    const [found] = await db
       .select()
       .from(employees)
-      .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, parsed.data.discordId)))
+      .where(and(eq(employees.workshopId, ws.id), eq(employees.discordId, discordId)))
       .limit(1);
-    if (target && (await employeeIsWorkshopDono(target, ws.id))) {
-      return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
-    }
+    emp = found ?? null;
   }
-  const discordId = (parsed.data.discordId ?? "").replace(/\D/g, "") || null;
-  if (discordId) {
-    await db
-      .delete(whitelists)
-      .where(and(eq(whitelists.workshopId, ws.id), eq(whitelists.discordId, discordId)));
+  if (emp && !me.isAdmin && !me.donoWorkshops.includes(ws.id) && (await employeeIsWorkshopDono(emp, ws.id))) {
+    return c.json({ error: "Gerente não pode excluir ou alterar o proprietário" }, 403);
   }
-  const starts = new Date();
-  const [row] = await db
-    .insert(blacklists)
-    .values({
-      workshopId: ws.id,
-      employeeName: parsed.data.employeeName,
-      discordId,
-      reason: parsed.data.reason,
-      days: parsed.data.days,
-      startsAt: starts,
-      endsAt: new Date(starts.getTime() + parsed.data.days * 86400000),
-      createdBy: me.id,
-    })
-    .returning();
-  sendWebhook(
-    ws.blacklistWebhookUrl,
-    {
-      title: `Blacklist — ${ws.name}`,
-      description: `**${row.employeeName}** foi para a blacklist.`,
-      fields: [
-        { name: "Motivo", value: row.reason.slice(0, 500) },
-        { name: "Dias", value: String(row.days), inline: true },
-        { name: "Discord", value: row.discordId || "—", inline: true },
-      ],
-    },
+  const result = await applyBlacklistBan({
+    me,
     ws,
-  );
-  return c.json(row, 201);
+    name: parsed.data.employeeName,
+    discordId,
+    reason: parsed.data.reason,
+    days: parsed.data.days,
+    employee: emp,
+  });
+  return c.json({ ...result.row, kickedQueued: result.kickedQueued, removedStaff: result.removedStaff, deletedUser: result.deletedUser }, 201);
 });
 
 workshopApi.delete("/:slug/blacklist/:id", async (c) => {
