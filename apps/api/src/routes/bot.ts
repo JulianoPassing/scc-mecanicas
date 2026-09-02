@@ -6,7 +6,7 @@ import { env } from "../env.js";
 import { db } from "../db/index.js";
 import { botActions, botLogs, employees, farmEntries, timeClockSessions, workshops } from "../db/schema.js";
 import { sendWebhook } from "../discord.js";
-import { fileFromBody, saveFarmProof } from "../uploads.js";
+import { fileFromBody, storeFarmProof } from "../uploads.js";
 
 export const botPublic = new Hono();
 
@@ -202,7 +202,13 @@ botPublic.post("/bot/logs", async (c) => {
   return c.json({ inserted });
 });
 
-async function recordFarm(input: { guildId: string; discordId: string; amount: number; proofUrl?: string | null }) {
+async function recordFarm(input: {
+  guildId: string;
+  discordId: string;
+  amount: number;
+  proofUrl?: string | null;
+  skipWebhook?: boolean;
+}) {
   const [ws] = await db.select().from(workshops).where(eq(workshops.guildId, input.guildId)).limit(1);
   if (!ws) return { error: "Mecânica não encontrada para esse guild_id", status: 404 as const };
   const discordId = input.discordId.replace(/\D/g, "") || input.discordId;
@@ -223,19 +229,21 @@ async function recordFarm(input: { guildId: string; discordId: string; amount: n
       status: "pending",
     })
     .returning();
-  sendWebhook(
-    ws.farmWebhookUrl,
-    {
-      title: "🌾 Farm pendente",
-      color: 0xf59e0b,
-      fields: [
-        { name: "👤 Funcionário", value: `<@${discordId}> — ${emp.name}` },
-        { name: "📊 Quantidade", value: String(input.amount), inline: true },
-      ],
-      ...(input.proofUrl ? { image: { url: input.proofUrl } } : {}),
-    },
-    ws,
-  );
+  if (!input.skipWebhook) {
+    sendWebhook(
+      ws.farmWebhookUrl,
+      {
+        title: "🌾 Farm pendente",
+        color: 0xf59e0b,
+        fields: [
+          { name: "👤 Funcionário", value: `<@${discordId}> — ${emp.name}` },
+          { name: "📊 Quantidade", value: String(input.amount), inline: true },
+        ],
+        ...(input.proofUrl ? { image: { url: input.proofUrl } } : {}),
+      },
+      ws,
+    );
+  }
   return { ok: true as const, employee: emp.name, amount: input.amount, id: row.id, proof_url: row.proofUrl };
 }
 
@@ -271,13 +279,32 @@ botPublic.post("/bot/farm-upload", async (c) => {
   }
   const parsedFile = await fileFromBody(body.file);
   if (!parsedFile) return c.json({ error: "Print obrigatório" }, 400);
-  let proofUrl: string;
+  const [ws] = await db.select().from(workshops).where(eq(workshops.guildId, guildId)).limit(1);
+  let stored: { url: string; postedToDiscord: boolean };
   try {
-    proofUrl = (await saveFarmProof(parsedFile)).url;
+    stored = await storeFarmProof({
+      ...parsedFile,
+      webhookUrl: ws?.farmWebhookUrl,
+      workshop: ws ? { name: ws.name, primaryColor: ws.primaryColor } : undefined,
+      embed: {
+        title: "🌾 Farm pendente",
+        color: 0xf59e0b,
+        fields: [
+          { name: "👤 Discord", value: `<@${discordId.replace(/\D/g, "")}>` },
+          { name: "📊 Quantidade", value: String(Math.floor(amount)), inline: true },
+        ],
+      },
+    });
   } catch (e) {
     return c.json({ error: e instanceof Error ? e.message : "Falha ao salvar print" }, 400);
   }
-  const result = await recordFarm({ guildId, discordId, amount: Math.floor(amount), proofUrl });
+  const result = await recordFarm({
+    guildId,
+    discordId,
+    amount: Math.floor(amount),
+    proofUrl: stored.url,
+    skipWebhook: stored.postedToDiscord,
+  });
   if ("error" in result) return c.json({ error: result.error }, result.status);
   return c.json(result);
 });

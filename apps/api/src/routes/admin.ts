@@ -6,6 +6,7 @@ import { employees, userRoles, users, workshops, botActions } from "../db/schema
 import { actorName, audit } from "../audit.js";
 import { hashPassword } from "../auth.js";
 import { cargoFromSystemRole, systemRoleFromCargo, userIsWorkshopDono } from "../hierarchy.js";
+import { canOwnWorkshop } from "../access.js";
 import { canApprove, loadMe } from "../me.js";
 import { currentUserId } from "./auth.js";
 
@@ -309,7 +310,7 @@ admin.delete("/users/:id", async (c) => {
     ...targetRoles.map((r) => r.workshopId).filter(Boolean),
     target.requestedWorkshopId,
   ] as string[];
-  const donoCan = shopIds.some((id) => me.donoWorkshops.includes(id));
+  const donoCan = shopIds.some((id) => id && canOwnWorkshop(me, id));
   if (!me.isOwner && !me.isAdmin && !donoCan) {
     return c.json({ error: "Só o dono desta mecânica pode excluir este usuário" }, 403);
   }

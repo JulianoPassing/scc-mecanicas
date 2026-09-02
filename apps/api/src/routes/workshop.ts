@@ -27,10 +27,10 @@ import {
   seedHierarchy,
   syncEmployeeSystemRole,
 } from "../hierarchy.js";
-import { canAccessWorkshop, canManageWorkshop, requireMe } from "../access.js";
+import { canAccessWorkshop, canManageWorkshop, canOwnWorkshop, requireMe } from "../access.js";
 import { actorName, audit } from "../audit.js";
 import { moneyBr, sendWebhook } from "../discord.js";
-import { fileFromBody, saveFarmProof } from "../uploads.js";
+import { fileFromBody, storeFarmProof } from "../uploads.js";
 
 export const workshopApi = new Hono();
 
@@ -497,6 +497,58 @@ workshopApi.get("/:slug/billing", async (c) => {
     .groupBy(serviceOrders.mechanicName)
     .orderBy(desc(sql`sum(${serviceOrders.total})`));
   return c.json({ days: rows, mechanics });
+});
+
+workshopApi.delete("/:slug/users/:userId", async (c) => {
+  const g = await gate(c);
+  if ("error" in g && g.error) return g.error.json();
+  const { me, ws } = g as { me: NonNullable<Awaited<ReturnType<typeof requireMe>>>; ws: typeof workshops.$inferSelect };
+  if (!canOwnWorkshop(me, ws.id)) return c.json({ error: "Só o dono desta mecânica pode excluir cadastro" }, 403);
+  const userId = c.req.param("userId");
+  if (userId === me.id) return c.json({ error: "Você não pode excluir a própria conta" }, 403);
+  const [target] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!target) return c.json({ error: "Usuário não encontrado" }, 404);
+  if (target.username === "owner" || target.discordId === "owner-seed") {
+    return c.json({ error: "Não dá para excluir o owner" }, 403);
+  }
+  const targetRoles = await db.select().from(userRoles).where(eq(userRoles.userId, userId));
+  if (targetRoles.some((r) => r.role === "owner" || r.role === "admin")) {
+    return c.json({ error: "Não dá para excluir owner/admin" }, 403);
+  }
+  const belongs =
+    target.requestedWorkshopId === ws.id ||
+    targetRoles.some((r) => r.workshopId === ws.id) ||
+    (
+      await db
+        .select({ id: employees.id })
+        .from(employees)
+        .where(and(eq(employees.workshopId, ws.id), or(eq(employees.userId, userId), eq(employees.discordId, target.discordId))))
+        .limit(1)
+    ).length > 0;
+  if (!belongs) return c.json({ error: "Esse cadastro não é desta mecânica" }, 403);
+  if (!me.isAdmin && targetRoles.some((r) => r.role === "dono_mec" && r.workshopId === ws.id) && userId !== me.id) {
+    return c.json({ error: "Não dá para excluir o outro proprietário por aqui" }, 403);
+  }
+  await db.update(employees).set({ userId: null, status: "inactive" }).where(and(eq(employees.userId, userId), eq(employees.workshopId, ws.id)));
+  await db.delete(userRoles).where(and(eq(userRoles.userId, userId), eq(userRoles.workshopId, ws.id)));
+  const left = await db.select().from(userRoles).where(eq(userRoles.userId, userId));
+  const otherShops = left.some((r) => r.workshopId && r.workshopId !== ws.id);
+  if (!otherShops && !left.some((r) => r.role === "owner" || r.role === "admin")) {
+    await db.delete(users).where(eq(users.id, userId));
+  } else {
+    if (target.requestedWorkshopId === ws.id) {
+      await db.update(users).set({ approved: left.length > 0, requestedWorkshopId: left.find((r) => r.workshopId)?.workshopId ?? null }).where(eq(users.id, userId));
+    }
+  }
+  await audit({
+    workshopId: ws.id,
+    actorId: me.id,
+    actorName: actorName(me),
+    action: "user.delete",
+    summary: `Excluiu o cadastro ${target.username} desta mecânica`,
+    payload: { userId: target.id, discordId: target.discordId },
+  });
+  return c.json({ ok: true });
 });
 
 workshopApi.get("/:slug/employees", async (c) => {
@@ -1283,12 +1335,6 @@ workshopApi.post("/:slug/farm", async (c) => {
   }
   const parsedFile = await fileFromBody(body.file);
   if (!parsedFile) return c.json({ error: "Anexe o print da entrega" }, 400);
-  let proofUrl: string;
-  try {
-    proofUrl = (await saveFarmProof(parsedFile)).url;
-  } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : "Falha ao salvar print" }, 400);
-  }
   const discordId = (me.discordId ?? "").replace(/\D/g, "");
   const [emp] = await db
     .select()
@@ -1302,6 +1348,25 @@ workshopApi.post("/:slug/farm", async (c) => {
     )
     .limit(1);
   if (!emp) return c.json({ error: "Seu usuário não está na equipe desta mecânica" }, 403);
+  let stored: { url: string; postedToDiscord: boolean };
+  try {
+    stored = await storeFarmProof({
+      ...parsedFile,
+      webhookUrl: ws.farmWebhookUrl,
+      workshop: { name: ws.name, primaryColor: ws.primaryColor },
+      embed: {
+        title: "🌾 Farm pendente",
+        color: 0xf59e0b,
+        fields: [
+          { name: "👤 Funcionário", value: `<@${emp.discordId}> — ${emp.name}` },
+          { name: "📊 Quantidade", value: String(Math.floor(amount)), inline: true },
+          { name: "🌐 Origem", value: "Site", inline: true },
+        ],
+      },
+    });
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : "Falha ao salvar print" }, 400);
+  }
   const [row] = await db
     .insert(farmEntries)
     .values({
@@ -1309,24 +1374,26 @@ workshopApi.post("/:slug/farm", async (c) => {
       employeeId: emp.id,
       discordId: emp.discordId,
       amount: Math.floor(amount),
-      proofUrl,
+      proofUrl: stored.url,
       status: "pending",
     })
     .returning();
-  sendWebhook(
-    ws.farmWebhookUrl,
-    {
-      title: "🌾 Farm pendente",
-      color: 0xf59e0b,
-      fields: [
-        { name: "👤 Funcionário", value: `<@${emp.discordId}> — ${emp.name}` },
-        { name: "📊 Quantidade", value: String(row.amount), inline: true },
-        { name: "🌐 Origem", value: "Site", inline: true },
-      ],
-      image: { url: proofUrl },
-    },
-    ws,
-  );
+  if (!stored.postedToDiscord) {
+    sendWebhook(
+      ws.farmWebhookUrl,
+      {
+        title: "🌾 Farm pendente",
+        color: 0xf59e0b,
+        fields: [
+          { name: "👤 Funcionário", value: `<@${emp.discordId}> — ${emp.name}` },
+          { name: "📊 Quantidade", value: String(row.amount), inline: true },
+          { name: "🌐 Origem", value: "Site", inline: true },
+        ],
+        image: { url: stored.url },
+      },
+      ws,
+    );
+  }
   await audit({
     workshopId: ws.id,
     actorId: me.id,

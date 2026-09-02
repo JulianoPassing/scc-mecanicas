@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
+import { postFarmImageToDiscord } from "./discord.js";
 
 const dir = resolve(dirname(fileURLToPath(import.meta.url)), "../data/uploads/farm");
 
@@ -45,11 +46,7 @@ function extFromMagic(bytes: Buffer, name: string, contentType: string) {
   return extFrom(name, contentType);
 }
 
-export async function saveFarmProof(input: {
-  bytes: Buffer;
-  filename?: string;
-  contentType?: string;
-}): Promise<{ filename: string; url: string }> {
+function assertFarmImage(input: { bytes: Buffer; filename?: string; contentType?: string }) {
   if (input.bytes.length < 32 || input.bytes.length > MAX_BYTES) {
     throw new Error("Print inválido (tamanho)");
   }
@@ -58,22 +55,51 @@ export async function saveFarmProof(input: {
   const ext = extFromMagic(input.bytes, input.filename || "", type);
   const allowed = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
   if (!allowed.includes(ext)) throw new Error("Envie uma imagem (png, jpg, webp ou gif)");
-  const sigOk =
-    ext === ".png" ||
-    ext === ".jpg" ||
-    ext === ".jpeg" ||
-    ext === ".gif" ||
-    ext === ".webp";
   const looksLikeImage =
     (input.bytes[0] === 0x89 && input.bytes[1] === 0x50) ||
     (input.bytes[0] === 0xff && input.bytes[1] === 0xd8) ||
     (input.bytes[0] === 0x47 && input.bytes[1] === 0x49) ||
     (input.bytes[0] === 0x52 && input.bytes[1] === 0x49);
-  if (!looksLikeImage || !sigOk) throw new Error("Arquivo não é uma imagem válida");
+  if (!looksLikeImage) throw new Error("Arquivo não é uma imagem válida");
+  return ext === ".jpeg" ? ".jpg" : ext;
+}
+
+export async function saveFarmProof(input: {
+  bytes: Buffer;
+  filename?: string;
+  contentType?: string;
+}): Promise<{ filename: string; url: string }> {
+  const ext = assertFarmImage(input);
   await mkdir(dir, { recursive: true });
-  const filename = `${randomUUID()}${ext === ".jpeg" ? ".jpg" : ext}`;
+  const filename = `${randomUUID()}${ext}`;
   await writeFile(join(dir, filename), input.bytes);
   return { filename, url: proofPublicUrl(filename) };
+}
+
+export async function storeFarmProof(input: {
+  bytes: Buffer;
+  filename?: string;
+  contentType?: string;
+  webhookUrl?: string | null;
+  workshop?: { name: string; primaryColor?: string | null };
+  embed: {
+    title: string;
+    description?: string;
+    fields?: { name: string; value: string; inline?: boolean }[];
+    color?: number;
+  };
+}): Promise<{ url: string; postedToDiscord: boolean }> {
+  assertFarmImage(input);
+  const filename = input.filename || `print${extFromMagic(input.bytes, input.filename || "", input.contentType || "")}`;
+  const discordUrl = await postFarmImageToDiscord(
+    input.webhookUrl,
+    { bytes: input.bytes, filename, contentType: input.contentType || "image/png" },
+    input.embed,
+    input.workshop,
+  );
+  if (discordUrl) return { url: discordUrl, postedToDiscord: true };
+  const local = await saveFarmProof(input);
+  return { url: local.url, postedToDiscord: false };
 }
 
 export async function fileFromBody(file: unknown): Promise<{ bytes: Buffer; filename: string; contentType: string } | null> {

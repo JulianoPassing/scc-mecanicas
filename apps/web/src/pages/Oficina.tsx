@@ -226,7 +226,12 @@ export function OficinaPage() {
           {tab === "os" && <Ordens slug={slug!} canDelete={manage} />}
           {tab === "faturamento" && <Faturamento slug={slug!} />}
           {tab === "cadastros" && canApproveSignups && summary && (
-            <Cadastros workshopId={summary.workshop.id} workshopName={summary.workshop.name} canEditDono={isShopDono} />
+            <Cadastros
+              slug={slug!}
+              workshopId={summary.workshop.id}
+              workshopName={summary.workshop.name}
+              canEditDono={isShopDono}
+            />
           )}
           {tab === "equipe" && <Equipe slug={slug!} manage={manage} canEditDono={isShopDono} />}
           {tab === "hierarquia" && <Hierarquia slug={slug!} manage={manage} />}
@@ -761,10 +766,12 @@ function Faturamento({ slug }: { slug: string }) {
 }
 
 function Cadastros({
+  slug,
   workshopId,
   workshopName,
   canEditDono,
 }: {
+  slug: string;
   workshopId: string;
   workshopName: string;
   canEditDono: boolean;
@@ -851,7 +858,7 @@ function Cadastros({
                 className="text-red-400 border-red-500/40"
                 onClick={() => {
                   if (!confirm(`Excluir a conta ${u.username}?`)) return;
-                  api(`/admin/users/${u.id}`, { method: "DELETE" })
+                  api(`/workshop/${slug}/users/${u.id}`, { method: "DELETE" })
                     .then(() => {
                       toast.success("Usuário excluído");
                       void load();
