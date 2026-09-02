@@ -1786,7 +1786,6 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
   const [sending, setSending] = useState(false);
   const [rejectId, setRejectId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
-  const [preview, setPreview] = useState<string | null>(null);
   async function load() {
     const d = await api<FarmWeek>(`/workshop/${slug}/farm`);
     setData(d);
@@ -1924,8 +1923,10 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
         <Card key={r.id} className="p-4 glass flex flex-wrap justify-between gap-3 text-sm">
           <div className="flex gap-3 min-w-0">
             {r.proofUrl ? (
-              <Button type="button" size="sm" variant="outline" className="shrink-0" onClick={() => setPreview(r.proofUrl!)}>
-                Ver imagem
+              <Button type="button" size="sm" variant="outline" className="shrink-0" asChild>
+                <a href={r.proofUrl} target="_blank" rel="noreferrer">
+                  Ver imagem
+                </a>
               </Button>
             ) : (
               <span className="text-xs text-muted-foreground shrink-0">sem print</span>
@@ -1978,19 +1979,6 @@ function Farm({ slug, manage }: { slug: string; manage: boolean }) {
               }}
             >
               Rejeitar
-            </Button>
-          </div>
-        </Modal>
-      )}
-      {preview && (
-        <Modal onClose={() => setPreview(null)} className="max-w-4xl">
-          <h3 className="text-lg font-bold">Print do farm</h3>
-          <img src={preview} alt="Print do farm" referrerPolicy="no-referrer" className="w-full rounded-md bg-black/40" />
-          <div className="flex justify-end">
-            <Button type="button" variant="outline" size="sm" asChild>
-              <a href={preview} target="_blank" rel="noreferrer">
-                Abrir em nova aba
-              </a>
             </Button>
           </div>
         </Modal>
