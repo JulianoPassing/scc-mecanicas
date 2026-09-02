@@ -858,12 +858,21 @@ function Cadastros({
                 className="text-red-400 border-red-500/40"
                 onClick={() => {
                   if (!confirm(`Excluir a conta ${u.username}?`)) return;
-                  api(`/workshop/${slug}/users/${u.id}`, { method: "DELETE" })
-                    .then(() => {
+                  void (async () => {
+                    try {
+                      try {
+                        await api(`/workshop/${slug}/users/${u.id}`, { method: "DELETE" });
+                      } catch (e) {
+                        const msg = e instanceof Error ? e.message : "";
+                        if (!/404|Not found|não encontrad/i.test(msg)) throw e;
+                        await api(`/admin/users/${u.id}`, { method: "DELETE" });
+                      }
                       toast.success("Usuário excluído");
-                      void load();
-                    })
-                    .catch((e) => toast.error(e instanceof Error ? e.message : "Falha"));
+                      await load();
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Falha");
+                    }
+                  })();
                 }}
               >
                 Excluir
